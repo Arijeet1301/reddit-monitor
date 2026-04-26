@@ -18,6 +18,7 @@ Quickstart:
 import argparse
 import gzip
 import json
+import logging
 import os
 import smtplib
 import ssl
@@ -35,6 +36,28 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Logger — writes to both stdout AND output/reddit_monitor.log so cron failures
+# are always captured even when you're not watching the terminal.
+def _setup_logger(output_dir: str = "output") -> logging.Logger:
+    Path(output_dir).mkdir(exist_ok=True)
+    log = logging.getLogger("reddit_monitor")
+    if log.handlers:
+        return log  # already configured (e.g. called twice in tests)
+    log.setLevel(logging.DEBUG)
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S")
+    # File handler — DEBUG and above
+    fh = logging.FileHandler(os.path.join(output_dir, "reddit_monitor.log"), encoding="utf-8")
+    fh.setFormatter(fmt)
+    log.addHandler(fh)
+    # Console handler — INFO and above (keeps terminal readable)
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(fmt)
+    log.addHandler(ch)
+    return log
+
+log = _setup_logger()
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  ★ CONFIGURE THESE — the only block you need to edit ★
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -45,6 +68,12 @@ SUBREDDITS  = ["subreddit1", "subreddit2"]  # e.g. ["india", "bangalore", "mumba
 LIMIT       = 25                          # max posts per subreddit (25 is a good default)
 TIME_FILTER = "week"                      # how far back: day | week | month | year | all
 OUTPUT_DIR  = "output"                    # folder where previews + JSON are saved
+
+# AI model — swap for cheaper/faster if Opus is overkill for your use case:
+#   claude-opus-4-6          → most capable, highest cost
+#   claude-sonnet-4-6        → strong quality, ~5x cheaper than Opus
+#   claude-haiku-4-5-20251001 → fast and cheap, good for simple digests
+MODEL = "claude-opus-4-6"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Examples:
@@ -132,7 +161,7 @@ def _get(url: str, retries: int = 2) -> dict:
         except urllib.error.HTTPError as e:
             if e.code == 429 and attempt < retries:
                 wait = 10 * (attempt + 1)
-                print(f"  Rate limited — retrying in {wait}s...")
+                log.warning(f"Rate limited (429) — retrying in {wait}s...")
                 time.sleep(wait)
             else:
                 raise
@@ -168,7 +197,7 @@ def scrape(subreddits: list[str], keywords: list[str], limit: int, time_filter: 
             data = _get(url)
             time.sleep(_DELAY)
         except Exception as e:
-            print(f"  Skipping r/{sub}: {e}")
+            log.warning(f"Skipping r/{sub}: {e}")
             continue
 
         for child in data.get("data", {}).get("children", []):
@@ -245,13 +274,13 @@ def _robust_json_parse(text: str) -> dict | None:
 def analyze_with_claude(posts: list[Post], keywords: list[str], topic: str) -> dict | None:
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
-        print("  No ANTHROPIC_API_KEY — skipping AI analysis (raw digest only)")
+        log.info("No ANTHROPIC_API_KEY — skipping AI analysis (raw digest only)")
         return None
 
     try:
         from anthropic import Anthropic
     except ImportError:
-        print("  anthropic package not installed — skipping AI analysis")
+        log.warning("anthropic package not installed — skipping AI analysis")
         return None
 
     client = Anthropic(api_key=api_key)
@@ -300,16 +329,16 @@ Return ONLY valid JSON matching the structure above."""
 
     try:
         resp = client.messages.create(
-            model="claude-opus-4-6",
+            model=MODEL,
             max_tokens=4000,
             messages=[{"role": "user", "content": prompt}],
         )
         result = _robust_json_parse(resp.content[0].text)
         if result is None:
-            print("  Claude returned unparseable response — skipping analysis")
+            log.error("Claude returned unparseable response — skipping analysis")
         return result
     except Exception as e:
-        print(f"  Claude analysis failed: {e}")
+        log.error(f"Claude analysis failed: {e}")
         return None
 
 
@@ -565,6 +594,7 @@ Examples:
     if (topic == _PLACEHOLDER_TOPIC and not args.topic) \
             or keywords == _PLACEHOLDER_KEYWORDS \
             or subreddits == _PLACEHOLDER_SUBS:
+        log.error("Script not configured — fill in TOPIC, KEYWORDS, SUBREDDITS in the config block")
         print("\n⚠  You haven't configured the script yet.")
         print("   Open reddit_monitor.py and fill in the CONFIG block at the top:")
         print('     TOPIC      = "your topic"')
@@ -573,81 +603,71 @@ Examples:
         print("\n   See the examples in the config block for inspiration.\n")
         return
 
-    print(f"\n{'='*55}")
-    print(f"  Reddit Monitor — {topic}")
-    print(f"{'='*55}")
-    print(f"  Keywords   : {', '.join(keywords)}")
-    print(f"  Subreddits : r/{', r/'.join(subreddits)}")
-    print(f"  Time range : last {args.time}")
-    print(f"{'='*55}\n")
+    log.info(f"Starting — topic={topic!r} keywords={keywords} subreddits={subreddits} time={args.time} model={MODEL}")
 
     # Step 1: Scrape
-    print("[1/5] Scraping Reddit...")
+    log.info("[1/5] Scraping Reddit...")
     posts = scrape(subreddits, keywords, args.limit, args.time)
     if not posts:
-        print("  No posts found. Try different keywords, subreddits, or a longer time range.")
+        log.warning("No posts found — try different keywords, subreddits, or a longer time range")
         return
-    print(f"  Found {len(posts)} unique posts")
+    log.info(f"Found {len(posts)} unique posts")
 
     # Step 2: Deduplicate against previous runs
     if not args.no_dedup:
         posts, skipped = filter_new_posts(posts, args.output)
-        print(f"  {skipped} already seen in previous runs — {len(posts)} new posts remaining\n")
+        log.info(f"{skipped} already seen — {len(posts)} new posts remaining")
         if not posts:
-            print("  Nothing new since last run. Use --no-dedup to include all posts.")
+            log.info("Nothing new since last run. Use --no-dedup to include all posts.")
             return
     else:
-        print("  Deduplication skipped (--no-dedup)\n")
+        log.info("Deduplication skipped (--no-dedup)")
 
     # Step 3: Claude analysis (optional)
     analysis = None
     if not args.no_ai:
-        print("[3/5] Running Claude AI analysis...")
+        log.info(f"[3/5] Running Claude AI analysis (model={MODEL})...")
         analysis = analyze_with_claude(posts, keywords, topic)
         if analysis:
-            print(f"  Done — sentiment: {analysis.get('overall_sentiment','?')}\n")
+            log.info(f"Analysis done — sentiment: {analysis.get('overall_sentiment','?')}")
     else:
-        print("[3/5] AI analysis skipped (--no-ai)\n")
+        log.info("[3/5] AI analysis skipped (--no-ai)")
 
     # Step 4: Save raw data
     raw_path = save_raw(posts, analysis, keywords, subreddits, args.output)
-    print(f"[4/5] Raw data saved → {raw_path}\n")
+    log.info(f"[4/5] Raw data saved → {raw_path}")
 
     # Step 5: Build email + send or preview
-    print("[5/5] Building email...")
+    log.info("[5/5] Building email...")
     subject, html, plain_text = build_email(posts, analysis, topic, subreddits)
     preview_path = save_preview(html, plain_text, subject, args.output)
-    print(f"  Subject : {subject}")
-    print(f"  Preview → {preview_path}\n")
+    log.info(f"Subject : {subject}")
+    log.info(f"Preview → {preview_path}")
 
     if args.send:
-        print("  Sending email...")
+        log.info("Sending email...")
         try:
             n = send_email(subject, html, plain_text)
-            # Only mark as seen after a successful send
             _save_seen_ids([p.id for p in posts], args.output)
-            print(f"  Sent to {n} recipients\n")
+            log.info(f"Sent to {n} recipients")
         except ValueError as e:
-            print(f"  Email config missing: {e}")
-            print("  Add GMAIL_USER, GMAIL_APP_PASSWORD, EMAIL_RECIPIENTS to .env\n")
+            log.error(f"Email config missing: {e} — add to .env")
         except Exception as e:
-            print(f"  Email failed: {e}\n")
+            log.error(f"Email failed: {e}")
     else:
-        # Mark as seen on preview too so manual runs don't re-surface the same posts
         _save_seen_ids([p.id for p in posts], args.output)
-        print("  Run with --send to actually send the email.")
-        print("  Opening preview in browser...\n")
+        log.info("Run with --send to actually send the email. Opening preview in browser...")
         try:
             import subprocess as _sp
             _sp.Popen(["open", preview_path])
         except Exception:
             pass
 
-    print(f"Done! {len(posts)} posts processed.")
+    log.info(f"Done — {len(posts)} posts processed")
     if analysis:
-        print(f"Sentiment: {analysis.get('overall_sentiment','?').upper()}")
+        log.info(f"Sentiment: {analysis.get('overall_sentiment','?').upper()}")
         for theme in analysis.get("key_themes", [])[:3]:
-            print(f"  • {theme['theme']} ({theme['frequency']})")
+            log.info(f"  • {theme['theme']} ({theme['frequency']})")
 
 
 if __name__ == "__main__":
