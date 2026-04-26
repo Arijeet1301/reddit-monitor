@@ -24,6 +24,8 @@ Works for any topic — brand monitoring, competitor tracking, category pulse, p
 
 ## Quickstart
 
+**Run these commands in your terminal:**
+
 ```bash
 git clone https://github.com/Arijeet1301/reddit-monitor.git
 cd reddit-monitor
@@ -31,7 +33,7 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Open `reddit_monitor.py` and fill in the config block at the top:
+**Open `reddit_monitor.py` in any text editor** and fill in the config block at the top:
 
 ```python
 TOPIC       = "your topic"               # e.g. "Zomato complaints"
@@ -39,11 +41,13 @@ KEYWORDS    = ["keyword 1", "keyword 2"] # what to search for (OR logic)
 SUBREDDITS  = ["india", "bangalore"]     # which subreddits to search
 ```
 
-Then run:
+**Open `.env` in any text editor** and fill in your Gmail and API credentials (see Setup section below).
+
+**Then run these in your terminal (inside the `reddit-monitor` folder):**
 
 ```bash
-python reddit_monitor.py          # preview email in browser (nothing sent)
-python reddit_monitor.py --send   # send to your recipients
+python reddit_monitor.py          # preview email in browser — nothing sent
+python reddit_monitor.py --send   # actually send to your recipients
 ```
 
 ---
@@ -175,18 +179,21 @@ After that it runs automatically at 11:00 IST every day. Logs are visible under 
 
 ### Option B — Mac cron (laptop must be on)
 
-Run automatically every day at 11 AM:
+Run automatically every day at 11 AM.
+
+**In your terminal, run:**
 
 ```bash
 crontab -e
 ```
 
-Add:
+This opens a text editor. Add this line (replace `/path/to/reddit-monitor` with your actual folder path):
+
 ```
 0 11 * * * cd /path/to/reddit-monitor && /usr/bin/python3 reddit_monitor.py --send >> output/cron.log 2>&1
 ```
 
-Find your Python path: `which python3`
+Save and exit. To find your Python path, run in terminal: `which python3`
 
 > **Mac users:** grant Terminal full disk access for cron to work — System Settings → Privacy & Security → Full Disk Access.
 
