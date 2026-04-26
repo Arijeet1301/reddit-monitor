@@ -18,6 +18,7 @@ Quickstart:
 import argparse
 import base64
 import gzip
+import html as html_lib
 import json
 import logging
 import logging.handlers
@@ -286,7 +287,7 @@ def _save_history(analysis: dict, post_count: int, output_dir: str) -> None:
         "date":      datetime.now().strftime("%Y-%m-%d"),
         "time":      datetime.now().strftime("%H:%M"),
         "sentiment": analysis.get("overall_sentiment", "unknown"),
-        "score":     analysis.get("sentiment_score", 0),
+        "score":     analysis.get("sentiment_score"),  # None if Claude didn't return a score
         "themes":    [t["theme"] for t in analysis.get("key_themes", [])],
         "posts":     post_count,
     })
@@ -527,7 +528,7 @@ def build_email(
         )
         quotes_html = "".join(
             f'<blockquote style="background:#F9FAFB;border-left:3px solid #6B7280;'
-            f'padding:10px 14px;margin:8px 0;font-size:13px;color:#374151;font-style:italic">{q}</blockquote>'
+            f'padding:10px 14px;margin:8px 0;font-size:13px;color:#374151;font-style:italic">{html_lib.escape(q)}</blockquote>'
             for q in analysis.get("notable_quotes", [])
         )
 
@@ -583,8 +584,8 @@ def build_email(
 
     post_rows = "".join(
         f'<tr style="border-bottom:1px solid #F3F4F6">'
-        f'<td style="padding:10px;color:#6B7280;font-size:12px">r/{p.subreddit}</td>'
-        f'<td style="padding:10px"><a href="{p.url}" style="color:#F97316;text-decoration:none;font-size:13px">{p.title[:80]}</a></td>'
+        f'<td style="padding:10px;color:#6B7280;font-size:12px">r/{html_lib.escape(p.subreddit)}</td>'
+        f'<td style="padding:10px"><a href="{html_lib.escape(p.url)}" style="color:#F97316;text-decoration:none;font-size:13px">{html_lib.escape(p.title[:80])}</a></td>'
         f'<td style="padding:10px;text-align:center;font-size:13px;color:#374151">{p.score}</td>'
         f'<td style="padding:10px;text-align:center;font-size:12px;color:#6B7280">{p.date}</td>'
         f'</tr>'
@@ -797,9 +798,9 @@ Examples:
     args = parser.parse_args()
 
     # Resolve effective values (CLI overrides config block)
-    topic      = args.topic      or TOPIC
-    keywords   = args.keywords   or KEYWORDS
-    subreddits = args.subreddits or SUBREDDITS
+    topic      = (args.topic or TOPIC).strip()
+    keywords   = [k.strip() for k in (args.keywords   or KEYWORDS)]
+    subreddits = [s.strip() for s in (args.subreddits or SUBREDDITS)]
 
     # Guard: catch unconfigured placeholders before wasting time scraping
     if (topic == _PLACEHOLDER_TOPIC and not args.topic) \
@@ -854,12 +855,10 @@ Examples:
         analysis = analyze_with_claude(posts, keywords, topic, known_themes=recent_themes or None)
         if analysis:
             log.info(f"Analysis done — sentiment: {analysis.get('overall_sentiment','?')}")
-            # Compute delta now that we have the current score
+            # Compute delta for display — not persisted until --send
             score = analysis.get("sentiment_score", 0)
             if trend.get("previous_score") is not None:
                 trend["delta"] = score - trend["previous_score"]
-            # Persist this run to history (after get_trend so it only sees prior runs)
-            _save_history(analysis, len(posts), args.output)
     else:
         log.info("[3/5] AI analysis skipped (--no-ai)")
 
@@ -878,7 +877,10 @@ Examples:
         log.info("Sending email...")
         try:
             n = send_email(subject, html, plain_text)
+            # Only persist state after a successful send
             _save_seen_ids([p.id for p in posts], args.output)
+            if analysis:
+                _save_history(analysis, len(posts), args.output)
             log.info(f"Sent to {n} recipients")
         except ValueError as e:
             log.error(f"Email config missing: {e} — add to .env")
@@ -895,7 +897,6 @@ Examples:
             except Exception as e:
                 log.error(f"Alert email failed: {e}")
     else:
-        _save_seen_ids([p.id for p in posts], args.output)
         log.info("Run with --send to actually send the email. Opening preview in browser...")
         try:
             import subprocess as _sp

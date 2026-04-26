@@ -163,7 +163,7 @@ No server needed. Runs every day at 11 AM IST even when your laptop is off. Hist
 | `GMAIL_APP_PASSWORD` | your 16-character app password | Yes |
 | `EMAIL_RECIPIENTS` | comma-separated recipient list | Yes |
 
-> **Why Reddit credentials?** GitHub Actions runners use cloud IPs that Reddit blocks. The script uses Reddit's official API when credentials are present — no user account required, just a free Reddit app. Create one at [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps): click "create another app", choose type **script**, redirect URI `http://localhost`. The `client_id` appears under the app name; `client_secret` is labeled "secret".
+> **Why Reddit credentials?** GitHub Actions runners use cloud IPs that Reddit blocks. The script uses Reddit's official API when credentials are present — no user account required, just a free Reddit app. Create one at [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps): click "create another app", choose type **script**, redirect URI `http://localhost`. The `client_id` appears under the app name; `client_secret` is labeled "secret". After creating, open `reddit_monitor.py` and update the `_UA` variable to include your actual Reddit username instead of `reddit_monitor_bot` — Reddit's API terms require this.
 
 3. Go to **Actions → Daily Reddit Digest → Run workflow** to trigger the first run manually and verify it works.
 
