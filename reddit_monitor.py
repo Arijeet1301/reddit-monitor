@@ -116,8 +116,9 @@ _PLACEHOLDER_SUBS     = ["subreddit1", "subreddit2"]
 # ───────────────────────────────────────────────────────────────────────────────
 
 # Proper Reddit-style User-Agent — generic Mozilla strings get flagged faster
+_UA = "pc:reddit_intelligence_digest:v1.0 (by /u/reddit_monitor_bot)"
 _HEADERS = {
-    "User-Agent": "pc:reddit_intelligence_digest:v1.0 (by /u/reddit_monitor_bot)",
+    "User-Agent": _UA,
     "Accept-Encoding": "gzip",
     "Accept": "application/json",
 }
@@ -126,6 +127,61 @@ _DELAY = 1.5  # seconds between requests
 _SSL_CTX = ssl.create_default_context()
 _SSL_CTX.check_hostname = False
 _SSL_CTX.verify_mode = ssl.CERT_NONE
+
+# OAuth bearer token — populated at startup if REDDIT_CLIENT_ID + SECRET are set.
+# Authenticated requests go to oauth.reddit.com which isn't blocked by cloud IPs.
+_BEARER_TOKEN: str | None = None
+
+def _init_reddit_auth() -> None:
+    """Get an app-only OAuth token from Reddit. No user account needed."""
+    global _BEARER_TOKEN
+    client_id     = os.getenv("REDDIT_CLIENT_ID")
+    client_secret = os.getenv("REDDIT_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        return  # fall back to public JSON API (works from local, blocked on some cloud IPs)
+    import base64
+    creds = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    req = urllib.request.Request(
+        "https://www.reddit.com/api/v1/access_token",
+        data=b"grant_type=client_credentials",
+        headers={
+            "Authorization": f"Basic {creds}",
+            "User-Agent": _UA,
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
+            _BEARER_TOKEN = json.loads(resp.read())["access_token"]
+            log.info("Reddit OAuth: authenticated via app credentials")
+    except Exception as e:
+        log.warning(f"Reddit OAuth failed — falling back to public API: {e}")
+
+
+def _get(url: str, retries: int = 2) -> dict:
+    # When authenticated: use oauth subdomain (not blocked by cloud IPs)
+    if _BEARER_TOKEN:
+        url = url.replace("https://www.reddit.com/", "https://oauth.reddit.com/")
+        headers = {**_HEADERS, "Authorization": f"Bearer {_BEARER_TOKEN}"}
+    else:
+        headers = _HEADERS
+
+    for attempt in range(retries + 1):
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
+                raw = resp.read()
+                if resp.info().get("Content-Encoding") == "gzip":
+                    raw = gzip.decompress(raw)
+                return json.loads(raw.decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < retries:
+                wait = 10 * (attempt + 1)
+                log.warning(f"Rate limited — retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                raise
 
 
 @dataclass
@@ -153,25 +209,6 @@ class Post:
             "score": self.score, "num_comments": self.num_comments,
             "date": self.date, "top_comments": self.top_comments,
         }
-
-
-def _get(url: str, retries: int = 2) -> dict:
-    for attempt in range(retries + 1):
-        req = urllib.request.Request(url, headers=_HEADERS)
-        try:
-            with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
-                raw = resp.read()
-                # Handle gzip-compressed responses
-                if resp.info().get("Content-Encoding") == "gzip":
-                    raw = gzip.decompress(raw)
-                return json.loads(raw.decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt < retries:
-                wait = 10 * (attempt + 1)
-                log.warning(f"Rate limited (429) — retrying in {wait}s...")
-                time.sleep(wait)
-            else:
-                raise
 
 
 def _fetch_comments(subreddit: str, post_id: str, n: int = 3) -> list[str]:
@@ -773,6 +810,7 @@ Examples:
         print("\n   See the examples in the config block for inspiration.\n")
         return
 
+    _init_reddit_auth()  # no-op if REDDIT_CLIENT_ID/SECRET not set
     log.info(f"Starting — topic={topic!r} keywords={keywords} subreddits={subreddits} time={args.time} model={MODEL}")
 
     # Step 1: Scrape

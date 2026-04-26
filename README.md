@@ -150,12 +150,16 @@ No server needed. Runs every day at 8 AM IST even when your laptop is off. Histo
 1. Push this repo to GitHub (already done if you cloned it)
 2. Go to **Settings → Secrets and variables → Actions → New repository secret** and add:
 
-| Secret name | Value |
-|---|---|
-| `ANTHROPIC_API_KEY` | your Claude API key |
-| `GMAIL_USER` | your Gmail address |
-| `GMAIL_APP_PASSWORD` | your 16-character app password |
-| `EMAIL_RECIPIENTS` | comma-separated recipient list |
+| Secret name | Value | Required? |
+|---|---|---|
+| `REDDIT_CLIENT_ID` | from reddit.com/prefs/apps (type: script) | **Yes for Actions** |
+| `REDDIT_CLIENT_SECRET` | from reddit.com/prefs/apps | **Yes for Actions** |
+| `ANTHROPIC_API_KEY` | your Claude API key | Optional |
+| `GMAIL_USER` | your Gmail address | Yes |
+| `GMAIL_APP_PASSWORD` | your 16-character app password | Yes |
+| `EMAIL_RECIPIENTS` | comma-separated recipient list | Yes |
+
+> **Why Reddit credentials?** GitHub Actions runners use cloud IPs that Reddit blocks. The script uses Reddit's official API when credentials are present — no user account required, just a free Reddit app. Create one at [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps): click "create another app", choose type **script**, redirect URI `http://localhost`. The `client_id` appears under the app name; `client_secret` is labeled "secret".
 
 3. Go to **Actions → Daily Reddit Digest → Run workflow** to trigger the first run manually and verify it works.
 

@@ -9,10 +9,10 @@ on:
         description: 'Topic (e.g. "Swiggy complaints")'
         required: false
       keywords:
-        description: 'Keywords space-separated (e.g. "Swiggy swiggy app")'
+        description: 'Keywords comma-separated (e.g. "Swiggy,swiggy app")'
         required: false
       subreddits:
-        description: 'Subreddits space-separated (e.g. "india bangalore")'
+        description: 'Subreddits comma-separated (e.g. "india,bangalore")'
         required: false
       time:
         description: 'Time range: day | week | month | year'
@@ -49,10 +49,22 @@ jobs:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           EMAIL_RECIPIENTS: ${{ secrets.EMAIL_RECIPIENTS }}
+        env:
+          INPUT_TOPIC:      ${{ inputs.topic }}
+          INPUT_KEYWORDS:   ${{ inputs.keywords }}
+          INPUT_SUBS:       ${{ inputs.subreddits }}
+          INPUT_TIME:       ${{ inputs.time }}
         run: |
-          ARGS="--send"
-          [ -n "${{ inputs.topic }}"      ] && ARGS="$ARGS --topic '${{ inputs.topic }}'"
-          [ -n "${{ inputs.keywords }}"   ] && ARGS="$ARGS --keywords ${{ inputs.keywords }}"
-          [ -n "${{ inputs.subreddits }}" ] && ARGS="$ARGS --subreddits ${{ inputs.subreddits }}"
-          [ -n "${{ inputs.time }}"       ] && ARGS="$ARGS --time ${{ inputs.time }}"
-          eval python reddit_monitor.py $ARGS
+          set -e
+          CMD=(python reddit_monitor.py --send)
+          [ -n "$INPUT_TOPIC" ] && CMD+=(--topic "$INPUT_TOPIC")
+          if [ -n "$INPUT_KEYWORDS" ]; then
+            IFS=',' read -ra KWS <<< "$INPUT_KEYWORDS"
+            CMD+=(--keywords "${KWS[@]}")
+          fi
+          if [ -n "$INPUT_SUBS" ]; then
+            IFS=',' read -ra SUBS <<< "$INPUT_SUBS"
+            CMD+=(--subreddits "${SUBS[@]}")
+          fi
+          [ -n "$INPUT_TIME" ] && CMD+=(--time "$INPUT_TIME")
+          "${CMD[@]}"
