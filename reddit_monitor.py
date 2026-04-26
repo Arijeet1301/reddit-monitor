@@ -332,7 +332,12 @@ def _robust_json_parse(text: str) -> dict | None:
     return None
 
 
-def analyze_with_claude(posts: list[Post], keywords: list[str], topic: str) -> dict | None:
+def analyze_with_claude(
+    posts: list[Post],
+    keywords: list[str],
+    topic: str,
+    known_themes: list[str] | None = None,
+) -> dict | None:
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
         log.info("No ANTHROPIC_API_KEY — skipping AI analysis (raw digest only)")
@@ -354,6 +359,18 @@ def analyze_with_claude(posts: list[Post], keywords: list[str], topic: str) -> d
         for i, p in enumerate(posts[:40], 1)
     )
 
+    # Inject vocabulary from recent runs so Claude reuses existing theme names.
+    # This prevents RECURRING badge drift (e.g. "Login Issues" vs "Auth Problems").
+    known_themes_block = ""
+    if known_themes:
+        theme_list = ", ".join(f'"{t}"' for t in known_themes[:20])
+        known_themes_block = f"""
+<known_themes>
+These theme names appeared in recent runs. If the same issue is present today, reuse the exact name rather than inventing a new label:
+{theme_list}
+</known_themes>
+"""
+
     # XML tags keep instructions cleanly separated from messy Reddit data.
     # Few-shot example anchors the format for recommended_actions specifically
     # so Claude returns specific actions, not generic advice.
@@ -366,6 +383,7 @@ def analyze_with_claude(posts: list[Post], keywords: list[str], topic: str) -> d
 4. Extract real quotes from the posts for notable_quotes.
 5. Output ONLY valid JSON — no preamble, no explanation.
 </instructions>
+{known_themes_block}
 
 <example_output>
 {{
@@ -778,11 +796,17 @@ Examples:
     # Load trend BEFORE analysis so get_trend sees only previous runs
     trend = get_trend(args.output)
 
+    # Collect unique theme names from recent history to anchor Claude's vocabulary
+    history = _load_history(args.output)
+    recent_themes = list(dict.fromkeys(
+        t for run in history[-8:] for t in run.get("themes", [])
+    ))
+
     # Step 3: Claude analysis (optional)
     analysis = None
     if not args.no_ai:
         log.info(f"[3/5] Running Claude AI analysis (model={MODEL})...")
-        analysis = analyze_with_claude(posts, keywords, topic)
+        analysis = analyze_with_claude(posts, keywords, topic, known_themes=recent_themes or None)
         if analysis:
             log.info(f"Analysis done — sentiment: {analysis.get('overall_sentiment','?')}")
             # Compute delta now that we have the current score
