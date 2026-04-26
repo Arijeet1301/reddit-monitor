@@ -5,7 +5,7 @@ Reddit Monitor Starter Kit
 Scrapes Reddit for any keywords, optionally analyzes with Claude AI,
 and sends a daily HTML email digest to yourself and your team.
 
-Before running: fill in the CONFIG block below (lines 37-44).
+Before running: fill in the CONFIG block below (search for ★ CONFIGURE THESE).
 
 Quickstart:
   1. pip install -r requirements.txt
@@ -16,6 +16,7 @@ Quickstart:
 """
 
 import argparse
+import base64
 import gzip
 import json
 import logging
@@ -27,6 +28,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
@@ -42,24 +44,26 @@ load_dotenv()
 def _setup_logger(output_dir: str = "output") -> logging.Logger:
     Path(output_dir).mkdir(exist_ok=True)
     log = logging.getLogger("reddit_monitor")
-    if log.handlers:
-        return log  # already configured (e.g. called twice in tests)
     log.setLevel(logging.DEBUG)
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S")
-    # File handler — DEBUG and above
+    # Remove any existing file handler so we can re-point it (e.g. --output flag)
+    for h in log.handlers[:]:
+        if isinstance(h, logging.handlers.RotatingFileHandler):
+            log.removeHandler(h)
     fh = logging.handlers.RotatingFileHandler(
         os.path.join(output_dir, "reddit_monitor.log"),
         maxBytes=5 * 1024 * 1024,  # 5 MB per file
-        backupCount=3,              # keep .log, .log.1, .log.2, .log.3
+        backupCount=3,
         encoding="utf-8",
     )
     fh.setFormatter(fmt)
     log.addHandler(fh)
-    # Console handler — INFO and above (keeps terminal readable)
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)
-    ch.setFormatter(fmt)
-    log.addHandler(ch)
+    # Console handler added only once
+    if not any(type(h) is logging.StreamHandler for h in log.handlers):
+        ch = logging.StreamHandler()
+        ch.setLevel(logging.INFO)
+        ch.setFormatter(fmt)
+        log.addHandler(ch)
     return log
 
 log = _setup_logger()
@@ -116,7 +120,8 @@ _PLACEHOLDER_SUBS     = ["subreddit1", "subreddit2"]
 # ───────────────────────────────────────────────────────────────────────────────
 
 # Proper Reddit-style User-Agent — generic Mozilla strings get flagged faster
-_UA = "pc:reddit_intelligence_digest:v1.0 (by /u/reddit_monitor_bot)"
+_UA       = "pc:reddit_intelligence_digest:v1.0 (by /u/reddit_monitor_bot)"
+_BASE_URL = "https://www.reddit.com"  # replaced with oauth.reddit.com when authenticated
 _HEADERS = {
     "User-Agent": _UA,
     "Accept-Encoding": "gzip",
@@ -139,7 +144,6 @@ def _init_reddit_auth() -> None:
     client_secret = os.getenv("REDDIT_CLIENT_SECRET")
     if not client_id or not client_secret:
         return  # fall back to public JSON API (works from local, blocked on some cloud IPs)
-    import base64
     creds = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
     req = urllib.request.Request(
         "https://www.reddit.com/api/v1/access_token",
@@ -214,7 +218,7 @@ class Post:
 def _fetch_comments(subreddit: str, post_id: str, n: int = 3) -> list[str]:
     comments = []
     try:
-        url = f"https://www.reddit.com/r/{subreddit}/comments/{post_id}.json?limit={n}"
+        url = f"{_BASE_URL}/r/{subreddit}/comments/{post_id}.json?limit={n}"
         data = _get(url)
         time.sleep(_DELAY)
         if len(data) >= 2:
@@ -236,7 +240,7 @@ def scrape(subreddits: list[str], keywords: list[str], limit: int, time_filter: 
             "q": query, "sort": "relevance", "t": time_filter,
             "limit": min(limit, 100), "restrict_sr": "true",
         })
-        url = f"https://www.reddit.com/r/{sub}/search.json?{params}"
+        url = f"{_BASE_URL}/r/{sub}/search.json?{params}"
         try:
             data = _get(url)
             time.sleep(_DELAY)
@@ -306,7 +310,6 @@ def get_trend(output_dir: str) -> dict:
     all_themes = [t for run in history[-8:] for t in run.get("themes", [])]  # last 8 runs
 
     # A theme is RECURRING if it appeared in at least 2 of the last 8 runs
-    from collections import Counter
     counts    = Counter(all_themes)
     recurring = {theme for theme, n in counts.items() if n >= 2}
 
@@ -333,11 +336,11 @@ def _load_seen_ids(output_dir: str) -> set[str]:
 def _save_seen_ids(post_ids: list[str], output_dir: str) -> None:
     Path(output_dir).mkdir(exist_ok=True)
     path = os.path.join(output_dir, "seen_ids.txt")
-    existing = _load_seen_ids(output_dir)
-    all_ids = existing | set(post_ids)
-    # Keep last 5000 IDs to prevent the file growing forever
+    existing = list(_load_seen_ids(output_dir))
+    # Append new IDs, dedupe preserving order, keep newest 5000
+    combined = list(dict.fromkeys(existing + post_ids))
     with open(path, "w") as f:
-        f.write("\n".join(list(all_ids)[-5000:]))
+        f.write("\n".join(combined[-5000:]))
 
 
 def filter_new_posts(posts: list[Post], output_dir: str) -> tuple[list[Post], int]:
@@ -769,6 +772,7 @@ def save_raw(posts: list[Post], analysis: dict | None, keywords: list[str], subr
 # ───────────────────────────────────────────────────────────────────────────────
 
 def main():
+    global log
     parser = argparse.ArgumentParser(
         description="Reddit Monitor — scrape, analyze, and email a digest",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -809,6 +813,9 @@ Examples:
         print('     SUBREDDITS = ["india", "bangalore"]')
         print("\n   See the examples in the config block for inspiration.\n")
         return
+
+    # Re-init logger with the actual output dir (handles --output override)
+    log = _setup_logger(args.output)
 
     _init_reddit_auth()  # no-op if REDDIT_CLIENT_ID/SECRET not set
     log.info(f"Starting — topic={topic!r} keywords={keywords} subreddits={subreddits} time={args.time} model={MODEL}")

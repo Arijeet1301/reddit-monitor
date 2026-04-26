@@ -15,7 +15,7 @@ on:
         description: 'Subreddits comma-separated (e.g. "india,bangalore")'
         required: false
       time:
-        description: 'Time range: day | week | month | year'
+        description: 'Time range: day | week | month | year | all'
         required: false
         default: 'week'
 
