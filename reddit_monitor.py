@@ -228,6 +228,60 @@ def scrape(subreddits: list[str], keywords: list[str], limit: int, time_filter: 
 
 
 # ───────────────────────────────────────────────────────────────────────────────
+#  HISTORY — tracks sentiment + themes across runs for trending and recurrence
+# ───────────────────────────────────────────────────────────────────────────────
+
+def _load_history(output_dir: str) -> list[dict]:
+    path = os.path.join(output_dir, "history.json")
+    if not os.path.exists(path):
+        return []
+    with open(path) as f:
+        return json.load(f)
+
+
+def _save_history(analysis: dict, post_count: int, output_dir: str) -> None:
+    history = _load_history(output_dir)
+    history.append({
+        "date":      datetime.now().strftime("%Y-%m-%d"),
+        "time":      datetime.now().strftime("%H:%M"),
+        "sentiment": analysis.get("overall_sentiment", "unknown"),
+        "score":     analysis.get("sentiment_score", 0),
+        "themes":    [t["theme"] for t in analysis.get("key_themes", [])],
+        "posts":     post_count,
+    })
+    history = history[-90:]  # keep last 90 runs
+    Path(output_dir).mkdir(exist_ok=True)
+    with open(os.path.join(output_dir, "history.json"), "w") as f:
+        json.dump(history, f, indent=2)
+
+
+def get_trend(output_dir: str) -> dict:
+    """Compare today's sentiment against the previous run and surface recurring themes.
+
+    Always called BEFORE _save_history(), so history contains only past runs.
+    history[-1] is therefore the most recent previous run.
+    """
+    history = _load_history(output_dir)
+    if not history:
+        return {"delta": None, "previous_score": None, "previous_date": None, "recurring_themes": set()}
+
+    prev       = history[-1]  # most recent past run
+    all_themes = [t for run in history[-8:] for t in run.get("themes", [])]  # last 8 runs
+
+    # A theme is RECURRING if it appeared in at least 2 of the last 8 runs
+    from collections import Counter
+    counts    = Counter(all_themes)
+    recurring = {theme for theme, n in counts.items() if n >= 2}
+
+    return {
+        "delta":           None,  # populated after current run's score is known
+        "previous_score":  prev.get("score"),
+        "previous_date":   prev.get("date"),
+        "recurring_themes": recurring,
+    }
+
+
+# ───────────────────────────────────────────────────────────────────────────────
 #  SEEN IDs — filters posts already sent in a previous run
 # ───────────────────────────────────────────────────────────────────────────────
 
@@ -353,13 +407,20 @@ Return ONLY valid JSON matching the structure above."""
 #  EMAIL BUILDER
 # ───────────────────────────────────────────────────────────────────────────────
 
-def build_email(posts: list[Post], analysis: dict | None, topic: str, subreddits: list[str]) -> tuple[str, str, str]:
+def build_email(
+    posts: list[Post],
+    analysis: dict | None,
+    topic: str,
+    subreddits: list[str],
+    trend: dict | None = None,
+) -> tuple[str, str, str]:
     """Returns (subject, html, plain_text)."""
     date_str = datetime.now().strftime("%d %b %Y")
     subject  = f"[Reddit Monitor] {topic} digest — {date_str} ({len(posts)} posts)"
 
     analysis_html = ""
     plain_sections = []
+    recurring_themes = (trend or {}).get("recurring_themes", set())
 
     if analysis:
         score     = analysis.get("sentiment_score", 0)
@@ -367,8 +428,30 @@ def build_email(posts: list[Post], analysis: dict | None, topic: str, subreddits
         bar_color = "#EF4444" if score < -0.3 else ("#F59E0B" if score < 0.3 else "#22C55E")
         overall   = analysis.get("overall_sentiment", "N/A").upper()
 
+        # Trend delta badge
+        trend_html = ""
+        if trend and trend.get("previous_score") is not None:
+            delta     = score - trend["previous_score"]
+            direction = "↑ Improving" if delta > 0.05 else ("↓ Worsening" if delta < -0.05 else "→ Stable")
+            dt_color  = "#22C55E" if delta > 0.05 else ("#EF4444" if delta < -0.05 else "#6B7280")
+            trend_html = (
+                f'<div style="margin-top:10px;font-size:13px;color:{dt_color};font-weight:600">'
+                f'{direction} vs last run ({trend["previous_date"]}) &nbsp;'
+                f'<span style="font-weight:400;color:#6B7280">({delta:+.2f})</span></div>'
+            )
+            plain_sections.append(f"TREND: {direction} vs {trend['previous_date']} ({delta:+.2f})")
+
         themes_html = "".join(
-            f'<tr><td style="padding:10px;font-weight:600">{t["theme"]}</td>'
+            f'<tr><td style="padding:10px;font-weight:600">{t["theme"]}'
+            # NEW/RECURRING badge next to theme name
+            + (
+                '<span style="margin-left:8px;background:#FEF3C7;color:#92400E;'
+                'padding:2px 6px;border-radius:8px;font-size:10px;font-weight:700">RECURRING</span>'
+                if t["theme"] in recurring_themes else
+                '<span style="margin-left:8px;background:#EFF6FF;color:#1D4ED8;'
+                'padding:2px 6px;border-radius:8px;font-size:10px;font-weight:700">NEW</span>'
+            )
+            + f'</td>'
             f'<td style="padding:10px;color:#4B5563">{t["description"]}</td>'
             f'<td style="padding:10px;text-align:center">'
             f'<span style="background:{"#EF4444" if t["frequency"]=="high" else "#F59E0B" if t["frequency"]=="medium" else "#22C55E"};'
@@ -404,6 +487,7 @@ def build_email(posts: list[Post], analysis: dict | None, topic: str, subreddits
           <div style="display:flex;justify-content:space-between;font-size:11px;color:#9CA3AF;margin-top:4px">
             <span>Very Negative</span><span>Neutral</span><span>Very Positive</span>
           </div>
+          {trend_html}
         </div>
 
         <div style="background:white;border-radius:12px;padding:20px;margin-bottom:20px;box-shadow:0 1px 3px rgba(0,0,0,0.08)">
@@ -500,6 +584,67 @@ def build_email(posts: list[Post], analysis: dict | None, topic: str, subreddits
         + "\n\n".join(plain_sections)
     )
 
+    return subject, html, plain_text
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+#  ALERT EMAIL — sent immediately when sentiment crosses the urgency threshold
+# ───────────────────────────────────────────────────────────────────────────────
+
+ALERT_THRESHOLD = -0.8  # sentiment score below this triggers an immediate alert
+
+def build_alert_email(analysis: dict, topic: str, post_count: int) -> tuple[str, str, str]:
+    """Returns (subject, html, plain_text) for the urgent alert email."""
+    score   = analysis.get("sentiment_score", 0)
+    date_str = datetime.now().strftime("%d %b %Y %H:%M")
+    subject  = f"🚨 URGENT ALERT: {topic} sentiment critical — {date_str}"
+
+    concerns = "".join(
+        f'<li style="margin-bottom:8px;color:#991B1B">{c}</li>'
+        for c in analysis.get("top_concerns", [])
+    )
+    actions = "".join(
+        f'<li style="margin-bottom:8px;color:#374151">{a}</li>'
+        for a in analysis.get("recommended_actions", [])
+    )
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#FEF2F2">
+<div style="max-width:600px;margin:0 auto;padding:24px">
+  <div style="background:#EF4444;border-radius:16px;padding:24px;text-align:center;margin-bottom:20px">
+    <div style="font-size:40px">🚨</div>
+    <div style="color:white;font-size:20px;font-weight:800;margin-top:8px">Sentiment Alert</div>
+    <div style="color:rgba(255,255,255,0.85);font-size:14px;margin-top:4px">{topic} · {date_str}</div>
+  </div>
+  <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;border:2px solid #FCA5A5">
+    <div style="font-size:28px;font-weight:800;color:#EF4444;text-align:center">{score:+.2f}</div>
+    <div style="text-align:center;color:#6B7280;font-size:13px">Sentiment score (threshold: {ALERT_THRESHOLD})</div>
+    <p style="margin:16px 0 0;color:#374151;font-size:14px;line-height:1.7">{analysis.get("summary","")}</p>
+  </div>
+  <div style="background:#FEF2F2;border:1px solid #FCA5A5;border-radius:12px;padding:16px;margin-bottom:16px">
+    <h3 style="margin:0 0 10px;color:#991B1B;font-size:14px">Top Concerns</h3>
+    <ul style="margin:0;padding-left:20px">{concerns}</ul>
+  </div>
+  <div style="background:white;border-radius:12px;padding:16px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,0.08)">
+    <h3 style="margin:0 0 10px;color:#15803D;font-size:14px">Recommended Actions</h3>
+    <ol style="margin:0;padding-left:20px">{actions}</ol>
+  </div>
+  <div style="text-align:center;color:#9CA3AF;font-size:12px;padding:12px">
+    Full digest will follow in today's scheduled email · {post_count} posts analyzed
+  </div>
+</div>
+</body>
+</html>"""
+
+    plain_text = (
+        f"🚨 URGENT ALERT: {topic}\n"
+        f"Sentiment score: {score:+.2f} (threshold: {ALERT_THRESHOLD})\n\n"
+        f"Summary: {analysis.get('summary','')}\n\n"
+        f"Top concerns:\n" + "\n".join(f"• {c}" for c in analysis.get("top_concerns", [])) + "\n\n"
+        f"Actions:\n" + "\n".join(f"{i}. {a}" for i, a in enumerate(analysis.get("recommended_actions", []), 1))
+    )
     return subject, html, plain_text
 
 
@@ -630,6 +775,9 @@ Examples:
     else:
         log.info("Deduplication skipped (--no-dedup)")
 
+    # Load trend BEFORE analysis so get_trend sees only previous runs
+    trend = get_trend(args.output)
+
     # Step 3: Claude analysis (optional)
     analysis = None
     if not args.no_ai:
@@ -637,6 +785,12 @@ Examples:
         analysis = analyze_with_claude(posts, keywords, topic)
         if analysis:
             log.info(f"Analysis done — sentiment: {analysis.get('overall_sentiment','?')}")
+            # Compute delta now that we have the current score
+            score = analysis.get("sentiment_score", 0)
+            if trend.get("previous_score") is not None:
+                trend["delta"] = score - trend["previous_score"]
+            # Persist this run to history (after get_trend so it only sees prior runs)
+            _save_history(analysis, len(posts), args.output)
     else:
         log.info("[3/5] AI analysis skipped (--no-ai)")
 
@@ -646,7 +800,7 @@ Examples:
 
     # Step 5: Build email + send or preview
     log.info("[5/5] Building email...")
-    subject, html, plain_text = build_email(posts, analysis, topic, subreddits)
+    subject, html, plain_text = build_email(posts, analysis, topic, subreddits, trend=trend)
     preview_path = save_preview(html, plain_text, subject, args.output)
     log.info(f"Subject : {subject}")
     log.info(f"Preview → {preview_path}")
@@ -661,6 +815,16 @@ Examples:
             log.error(f"Email config missing: {e} — add to .env")
         except Exception as e:
             log.error(f"Email failed: {e}")
+
+        # Send urgent alert email if sentiment is critically negative
+        if analysis and analysis.get("sentiment_score", 0) < ALERT_THRESHOLD:
+            log.warning(f"Sentiment {analysis['sentiment_score']:.2f} below threshold {ALERT_THRESHOLD} — sending alert")
+            try:
+                alert_subj, alert_html, alert_plain = build_alert_email(analysis, topic, len(posts))
+                send_email(alert_subj, alert_html, alert_plain)
+                log.warning(f"ALERT sent — {alert_subj}")
+            except Exception as e:
+                log.error(f"Alert email failed: {e}")
     else:
         _save_seen_ids([p.id for p in posts], args.output)
         log.info("Run with --send to actually send the email. Opening preview in browser...")
@@ -675,6 +839,9 @@ Examples:
         log.info(f"Sentiment: {analysis.get('overall_sentiment','?').upper()}")
         for theme in analysis.get("key_themes", [])[:3]:
             log.info(f"  • {theme['theme']} ({theme['frequency']})")
+        if trend.get("delta") is not None:
+            direction = "↑" if trend["delta"] > 0.05 else ("↓" if trend["delta"] < -0.05 else "→")
+            log.info(f"Trend: {direction} {trend['delta']:+.2f} vs {trend['previous_date']}")
 
 
 if __name__ == "__main__":
