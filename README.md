@@ -22,9 +22,10 @@ Works for any topic. Brand monitoring, competitor tracking, policy research, cat
 
 ## What you need before starting
 
-- A computer with Python installed (Python 3.11 or newer — [download here](https://www.python.org/downloads/) if needed)
-- A Gmail account (you'll create a special "App Password" for sending — takes 2 minutes)
-- A Claude API key from [console.anthropic.com](https://console.anthropic.com) (optional — the tool works without it, just no AI summary)
+- **A computer with Python installed** (Python 3.11 or newer — [download here](https://www.python.org/downloads/))
+  - **Windows users — important:** During Python installation, you'll see a checkbox at the very bottom of the first screen that says **"Add Python.exe to PATH"**. You MUST check this box or nothing will work.
+- **A Gmail account** — you'll create a special "App Password" for sending (takes 2 minutes, instructions below)
+- **A Claude API key** from [console.anthropic.com](https://console.anthropic.com) — optional, the tool works without it, just no AI summary
 
 ---
 
@@ -32,22 +33,66 @@ Works for any topic. Brand monitoring, competitor tracking, policy research, cat
 
 ### Step 1 — Download the tool
 
-Open your **Terminal** (on Mac: press `Cmd + Space`, type "Terminal", hit Enter) and run these commands one by one:
+1. Click the green **Code** button at the top of this GitHub page and select **Download ZIP**
+2. Unzip the downloaded file and move the folder to your **Desktop**
+3. Open your **Terminal**
+   - Mac: press `Cmd + Space`, type "Terminal", hit Enter
+   - Windows: press the Windows key, search "Command Prompt", open it
+4. Type this command and hit Enter to navigate into the folder:
 
 ```bash
-git clone https://github.com/Arijeet1301/reddit-monitor.git
-cd reddit-monitor
-pip install -r requirements.txt
-cp .env.example .env
+cd Desktop/reddit-monitor-main
 ```
 
-> **What this does:** Downloads the tool, enters the folder, installs two small libraries it needs, and creates your personal settings file.
+5. Install the required files by running:
+
+```bash
+pip3 install -r requirements.txt
+```
 
 ---
 
-### Step 2 — Tell it what to track
+### Step 2 — Create your settings file
 
-Open the file `reddit_monitor.py` in any text editor (TextEdit on Mac works fine, or VS Code if you have it).
+In the `reddit-monitor-main` folder on your Desktop, find the file named `.env.example`.
+
+> **Can't see it?** Files starting with a dot are hidden by default.
+> - **Mac:** Open the folder in Finder and press `Cmd + Shift + .` (that's a period) to reveal hidden files
+> - **Windows:** In File Explorer, click **View → Show → Hidden items**
+
+Once you can see it:
+- **Duplicate** the file (right-click → Duplicate on Mac, or Copy + Paste on Windows)
+- **Rename** the copy to exactly `.env` — just `.env`, with a dot at the start and nothing after it (no `.txt`)
+
+---
+
+### Step 3 — Add your credentials
+
+Open the `.env` file in any text editor and fill in the values:
+
+```
+ANTHROPIC_API_KEY=sk-ant-...        ← paste your Claude key here (skip if you don't have one)
+GMAIL_USER=you@gmail.com            ← the Gmail address that will send the emails
+GMAIL_APP_PASSWORD=xxxx xxxx xxxx   ← see instructions below
+EMAIL_RECIPIENTS=you@email.com,colleague@email.com   ← who gets the email
+```
+
+**Getting a Gmail App Password** (you can't use your normal Gmail password here):
+1. Go to your Google Account → **Security**
+2. Make sure **2-Step Verification is ON** (required)
+3. Search for **"App Passwords"** in the search bar at the top
+4. Create one → choose "Mail" → copy the 16-character code it gives you
+5. Paste that code into `GMAIL_APP_PASSWORD` in your `.env` file
+
+> Tip: If you have a spare Gmail address, use that for sending so your personal inbox stays clean.
+
+Save the file when done.
+
+---
+
+### Step 4 — Tell it what to track
+
+Open the file `reddit_monitor.py` in any text editor (TextEdit on Mac, Notepad on Windows, or VS Code if you have it).
 
 Find the section near the top that looks like this and fill it in:
 
@@ -90,36 +135,12 @@ Save the file when done.
 
 ---
 
-### Step 3 — Add your credentials
+### Step 5 — Test it
 
-Open the file called `.env` in a text editor. Fill in the values:
-
-```
-ANTHROPIC_API_KEY=sk-ant-...        ← paste your Claude key here (skip if you don't have one)
-GMAIL_USER=you@gmail.com            ← the Gmail address that will send the emails
-GMAIL_APP_PASSWORD=xxxx xxxx xxxx   ← see instructions below
-EMAIL_RECIPIENTS=you@email.com,colleague@email.com   ← who gets the email
-```
-
-**Getting a Gmail App Password** (you can't use your normal Gmail password here):
-1. Go to your Google Account → **Security**
-2. Make sure **2-Step Verification is ON** (required)
-3. Search for **"App Passwords"** in the search bar at the top
-4. Create one → choose "Mail" → copy the 16-character code it gives you
-5. Paste that code into `GMAIL_APP_PASSWORD` in your `.env` file
-
-> Tip: If you have a spare Gmail address, use that for sending so your personal inbox stays clean.
-
-Save the file when done.
-
----
-
-### Step 4 — Test it
-
-In your terminal, make sure you're inside the `reddit-monitor` folder, then run:
+In your terminal, make sure you're inside the `reddit-monitor-main` folder (if you closed it, run `cd Desktop/reddit-monitor-main` again), then run:
 
 ```bash
-python reddit_monitor.py
+python3 reddit_monitor.py
 ```
 
 This scrapes Reddit and **opens a preview of the email in your browser — nothing is sent yet.** Check that it looks right.
@@ -127,7 +148,7 @@ This scrapes Reddit and **opens a preview of the email in your browser — nothi
 When you're happy, send it for real:
 
 ```bash
-python reddit_monitor.py --send
+python3 reddit_monitor.py --send
 ```
 
 ---
@@ -141,10 +162,10 @@ This runs the script automatically at 11 AM every day using GitHub's free server
 **One-time setup:**
 
 1. Create a free account at [github.com](https://github.com) if you don't have one
-2. Fork this repo to your own GitHub account (click **Fork** at the top right of this page)
-3. Go to your forked repo → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**
+2. Make a copy of this tool into your own GitHub account — click the **Fork** button at the top-right of this page, then click **Create fork**
+3. In your forked copy, go to **Settings** → **Secrets and variables** → **Actions** → **New repository secret**
 
-Add these secrets one by one:
+Add these secrets one by one (click "New repository secret", enter the name and value, save, repeat):
 
 | Secret name | What to put |
 |---|---|
@@ -155,31 +176,31 @@ Add these secrets one by one:
 | `REDDIT_CLIENT_ID` | see note below |
 | `REDDIT_CLIENT_SECRET` | see note below |
 
-> **Reddit credentials:** GitHub's servers are blocked by Reddit's public API, so you need a free Reddit app to bypass this. Go to [old.reddit.com/prefs/apps](https://old.reddit.com/prefs/apps), scroll to the bottom, click **"are you a developer? create an app"**, choose type **script**, set redirect URI to `http://localhost`, and hit create. The `client_id` is the short string directly under the app name. The `client_secret` is labeled "secret". Also open `reddit_monitor.py` and change `reddit_monitor_bot` in the `_UA` line to your actual Reddit username.
+> **Reddit credentials:** GitHub's servers are blocked by Reddit's public API, so you need a free Reddit app to get around this. Go to [old.reddit.com/prefs/apps](https://old.reddit.com/prefs/apps), scroll to the very bottom, click **"are you a developer? create an app"**, choose type **script**, set redirect URI to `http://localhost`, tick the reCAPTCHA, and hit create. The `client_id` is the short string directly under the app name. The `client_secret` is labeled "secret". After creating, open `reddit_monitor.py` and change `reddit_monitor_bot` in the `_UA` line near the top to your actual Reddit username.
 
-4. Go to **Actions** tab → **Daily Reddit Digest** → **Run workflow** to do your first manual test run
+4. Go to the **Actions** tab → **Daily Reddit Digest** → **Run workflow** to do your first manual test run and confirm an email arrives
 
-After that it fires automatically at 11 AM IST every day. You can see logs under the Actions tab.
+After that it fires automatically at 11 AM IST every day. You can see the logs under the Actions tab.
 
 ---
 
 ### Option B — Mac cron (laptop must be on at 11 AM)
 
-In your terminal, run:
+In your terminal, run this command (this opens a friendlier text editor called nano):
 
 ```bash
-crontab -e
+env EDITOR=nano crontab -e
 ```
 
-This opens a text editor. Add this line at the bottom — replace `/path/to/reddit-monitor` with the actual folder path on your Mac (e.g. `/Users/yourname/reddit-monitor`):
+Add this line at the bottom — replace `/path/to/reddit-monitor-main` with the actual folder path (e.g. `/Users/yourname/Desktop/reddit-monitor-main`):
 
 ```
-0 11 * * * cd /path/to/reddit-monitor && /usr/bin/python3 reddit_monitor.py --send >> output/cron.log 2>&1
+0 11 * * * cd /path/to/reddit-monitor-main && /usr/bin/python3 reddit_monitor.py --send >> output/cron.log 2>&1
 ```
 
-Save and exit (in the default editor: press `Escape`, then type `:wq`, then Enter).
+To save: press `Ctrl + O` then `Enter`. To exit: press `Ctrl + X`.
 
-To find your Python path, run in terminal: `which python3`
+To find your Python path if needed, run: `which python3`
 
 > **Mac users:** You may need to grant Terminal full disk access for cron to work — System Settings → Privacy & Security → Full Disk Access → add Terminal.
 
@@ -187,26 +208,26 @@ To find your Python path, run in terminal: `which python3`
 
 ## Other useful commands
 
-All of these are run in your terminal, inside the `reddit-monitor` folder:
+All of these are run in your terminal, inside the `reddit-monitor-main` folder:
 
 ```bash
 # Preview email in browser without sending
-python reddit_monitor.py
+python3 reddit_monitor.py
 
 # Send the email
-python reddit_monitor.py --send
+python3 reddit_monitor.py --send
 
 # Run without AI analysis (faster, no Claude key needed)
-python reddit_monitor.py --no-ai
+python3 reddit_monitor.py --no-ai
 
 # Try a different topic without editing the file
-python reddit_monitor.py --topic "UPI issues" --keywords "UPI" "NPCI" --subreddits india
+python3 reddit_monitor.py --topic "UPI issues" --keywords "UPI" "NPCI" --subreddits india
 
 # Search further back in time
-python reddit_monitor.py --time month
+python3 reddit_monitor.py --time month
 
 # Show all posts again even if already sent before
-python reddit_monitor.py --no-dedup --send
+python3 reddit_monitor.py --no-dedup --send
 ```
 
 ---
@@ -236,6 +257,9 @@ python reddit_monitor.py --no-dedup --send
 
 **GitHub Actions getting a 403 error from Reddit**
 - You need to add `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET` as GitHub secrets — see setup instructions above
+
+**Windows: "python is not recognized"**
+- Re-install Python from [python.org](https://www.python.org/downloads/) and make sure to check **"Add Python.exe to PATH"** during installation
 
 ---
 
