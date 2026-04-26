@@ -3,7 +3,21 @@ name: Daily Reddit Digest
 on:
   schedule:
     - cron: '30 2 * * *'  # 08:00 IST (UTC+5:30)
-  workflow_dispatch:        # also triggerable manually from GitHub UI
+  workflow_dispatch:        # manual trigger from GitHub UI — inputs are optional overrides
+    inputs:
+      topic:
+        description: 'Topic (e.g. "Swiggy complaints")'
+        required: false
+      keywords:
+        description: 'Keywords space-separated (e.g. "Swiggy swiggy app")'
+        required: false
+      subreddits:
+        description: 'Subreddits space-separated (e.g. "india bangalore")'
+        required: false
+      time:
+        description: 'Time range: day | week | month | year'
+        required: false
+        default: 'week'
 
 jobs:
   digest:
@@ -35,4 +49,10 @@ jobs:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           EMAIL_RECIPIENTS: ${{ secrets.EMAIL_RECIPIENTS }}
-        run: python reddit_monitor.py --send
+        run: |
+          ARGS="--send"
+          [ -n "${{ inputs.topic }}"      ] && ARGS="$ARGS --topic '${{ inputs.topic }}'"
+          [ -n "${{ inputs.keywords }}"   ] && ARGS="$ARGS --keywords ${{ inputs.keywords }}"
+          [ -n "${{ inputs.subreddits }}" ] && ARGS="$ARGS --subreddits ${{ inputs.subreddits }}"
+          [ -n "${{ inputs.time }}"       ] && ARGS="$ARGS --time ${{ inputs.time }}"
+          eval python reddit_monitor.py $ARGS
