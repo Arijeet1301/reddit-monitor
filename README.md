@@ -139,7 +139,33 @@ python reddit_monitor.py --topic "UPI issues" --keywords "UPI" "NPCI" --subreddi
 
 ---
 
-## Daily automation (cron)
+## Daily automation
+
+### Option A — GitHub Actions (recommended, always-on)
+
+No server needed. Runs every day at 8 AM IST even when your laptop is off. History and seen-IDs persist automatically across runs via the Actions cache.
+
+**Setup (one time):**
+
+1. Push this repo to GitHub (already done if you cloned it)
+2. Go to **Settings → Secrets and variables → Actions → New repository secret** and add:
+
+| Secret name | Value |
+|---|---|
+| `ANTHROPIC_API_KEY` | your Claude API key |
+| `GMAIL_USER` | your Gmail address |
+| `GMAIL_APP_PASSWORD` | your 16-character app password |
+| `EMAIL_RECIPIENTS` | comma-separated recipient list |
+
+3. Go to **Actions → Daily Reddit Digest → Run workflow** to trigger the first run manually and verify it works.
+
+After that it runs automatically at 08:00 IST every day. Logs are visible under the Actions tab.
+
+**To change the topic/keywords without touching the code**, edit the config block at the top of `reddit_monitor.py`, commit, and push — the next scheduled run picks it up.
+
+---
+
+### Option B — Mac cron (laptop must be on)
 
 Run automatically every morning at 8 AM:
 

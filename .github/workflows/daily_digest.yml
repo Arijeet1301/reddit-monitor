@@ -1,0 +1,38 @@
+name: Daily Reddit Digest
+
+on:
+  schedule:
+    - cron: '30 2 * * *'  # 08:00 IST (UTC+5:30)
+  workflow_dispatch:        # also triggerable manually from GitHub UI
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Rolling-key cache: each run saves a new entry keyed by run_id,
+      # but restore-keys picks up the most recent previous entry.
+      # Since this runs daily, the cache is never evicted (7-day TTL).
+      - name: Restore persistent data (history + seen IDs)
+        uses: actions/cache@v4
+        with:
+          path: output/
+          key: reddit-data-${{ github.run_id }}
+          restore-keys: reddit-data-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run digest and send email
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          EMAIL_RECIPIENTS: ${{ secrets.EMAIL_RECIPIENTS }}
+        run: python reddit_monitor.py --send
