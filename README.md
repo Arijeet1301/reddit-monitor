@@ -1,30 +1,38 @@
 # Reddit Monitor
 
-Scrape any subreddit for keywords you care about, analyze the discussion with Claude AI, and send a daily HTML email digest to yourself and your team.
+**Track any topic on Reddit and get a daily email summary — no coding experience needed beyond the one-time setup.**
 
-**No Reddit account needed. Claude is optional. Reddit API key optional for local runs, required for GitHub Actions.**
-
----
-
-## What you get
-
-A daily email with:
-- **AI Summary** — 3–4 sentence overview of what Reddit is saying
-- **Sentiment bar** — positive / negative / neutral score (-1 to +1)
-- **Trend delta** — is sentiment improving or worsening vs the previous run?
-- **Key Themes** — with NEW / RECURRING badges based on history across runs
-- **Top Concerns** — what people are actually worried about
-- **Recommended Actions** — Claude's suggested next steps
-- **All Posts** — clickable table of every post found, sorted by score
-- **Urgent alert email** — fires separately when sentiment drops below -0.8
-
-Works for any topic — brand monitoring, competitor tracking, category pulse, policy research, anything.
+Point it at any keywords ("Swiggy delivery", "UPI failed", "AI regulation") and it scrapes Reddit, runs AI analysis, and delivers a clean email digest every morning.
 
 ---
 
-## Quickstart
+## What lands in your inbox every day
 
-**Run these commands in your terminal:**
+- **AI Summary** — 3–4 sentences on what Reddit is actually saying about your topic
+- **Sentiment score** — is the mood positive, negative, or neutral? Is it getting better or worse vs yesterday?
+- **Key Themes** — the main topics being discussed, with a NEW or RECURRING badge so you spot ghost issues
+- **Top Concerns** — what people are genuinely worried about
+- **Recommended Actions** — specific next steps suggested by the AI
+- **All Posts** — every post found, clickable, sorted by upvotes
+- **Urgent alert** — a separate red email if sentiment crashes below a critical threshold
+
+Works for any topic. Brand monitoring, competitor tracking, policy research, category pulse — anything.
+
+---
+
+## What you need before starting
+
+- A computer with Python installed (Python 3.11 or newer — [download here](https://www.python.org/downloads/) if needed)
+- A Gmail account (you'll create a special "App Password" for sending — takes 2 minutes)
+- A Claude API key from [console.anthropic.com](https://console.anthropic.com) (optional — the tool works without it, just no AI summary)
+
+---
+
+## Setup (do this once)
+
+### Step 1 — Download the tool
+
+Open your **Terminal** (on Mac: press `Cmd + Space`, type "Terminal", hit Enter) and run these commands one by one:
 
 ```bash
 git clone https://github.com/Arijeet1301/reddit-monitor.git
@@ -33,51 +41,26 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-**Open `reddit_monitor.py` in any text editor** and fill in the config block at the top:
-
-```python
-TOPIC       = "your topic"               # e.g. "Zomato complaints"
-KEYWORDS    = ["keyword 1", "keyword 2"] # what to search for (OR logic)
-SUBREDDITS  = ["india", "bangalore"]     # which subreddits to search
-```
-
-**Open `.env` in any text editor** and fill in your Gmail and API credentials (see Setup section below).
-
-**Then run these in your terminal (inside the `reddit-monitor` folder):**
-
-```bash
-python reddit_monitor.py          # preview email in browser — nothing sent
-python reddit_monitor.py --send   # actually send to your recipients
-```
+> **What this does:** Downloads the tool, enters the folder, installs two small libraries it needs, and creates your personal settings file.
 
 ---
 
-## Setup
+### Step 2 — Tell it what to track
 
-### 1. Install dependencies
+Open the file `reddit_monitor.py` in any text editor (TextEdit on Mac works fine, or VS Code if you have it).
 
-```bash
-pip install -r requirements.txt
-```
-
-Two packages: `anthropic` (for Claude AI, optional) and `python-dotenv`.
-
-### 2. Configure your topic
-
-Edit the config block at the top of `reddit_monitor.py`:
+Find the section near the top that looks like this and fill it in:
 
 ```python
-TOPIC       = "YOUR TOPIC HERE"
-KEYWORDS    = ["keyword 1", "keyword 2"]
-SUBREDDITS  = ["subreddit1", "subreddit2"]
-LIMIT       = 25          # max posts per subreddit
-TIME_FILTER = "week"      # day | week | month | year | all
+TOPIC       = "YOUR TOPIC HERE"           # Give your topic a name
+KEYWORDS    = ["keyword 1", "keyword 2"]  # What to search for on Reddit
+SUBREDDITS  = ["subreddit1", "subreddit2"] # Which Reddit communities to search
 ```
 
-**Examples:**
+**Examples to copy-paste and adapt:**
 
 ```python
-# Brand monitoring
+# Swiggy brand monitoring
 TOPIC      = "Swiggy mentions"
 KEYWORDS   = ["Swiggy", "swiggy app", "swiggy delivery"]
 SUBREDDITS = ["india", "bangalore", "mumbai", "delhi"]
@@ -92,7 +75,7 @@ TOPIC      = "quick commerce"
 KEYWORDS   = ["Blinkit", "Zepto", "quick commerce", "10 minute delivery"]
 SUBREDDITS = ["india", "bangalore", "mumbai"]
 
-# UPI / fintech
+# UPI / payments
 TOPIC      = "UPI issues"
 KEYWORDS   = ["UPI failed", "UPI down", "payment failed"]
 SUBREDDITS = ["india", "IndiaInvestments", "personalfinanceindia"]
@@ -103,191 +86,174 @@ KEYWORDS   = ["AI ban", "AI regulation", "deepfake law"]
 SUBREDDITS = ["india", "worldnews", "technology"]
 ```
 
-### 3. Set up your secrets
-
-```bash
-cp .env.example .env
-```
-
-Fill in `.env`:
-
-```env
-REDDIT_CLIENT_ID=                   # optional locally, required for GitHub Actions
-REDDIT_CLIENT_SECRET=               # optional locally, required for GitHub Actions
-ANTHROPIC_API_KEY=sk-ant-...        # optional — tool works without it
-GMAIL_USER=you@gmail.com
-GMAIL_APP_PASSWORD=xxxx xxxx xxxx   # see below
-EMAIL_RECIPIENTS=you@email.com,colleague@email.com
-```
-
-**Getting a Gmail App Password** (your normal password won't work):
-1. Google Account → Security → 2-Step Verification (must be ON)
-2. Search "App Passwords" → create one for "Mail"
-3. Paste the 16-character code into `GMAIL_APP_PASSWORD`
-
-> Tip: use a dedicated Gmail address for sending rather than your personal inbox.
+Save the file when done.
 
 ---
 
-## Running it
+### Step 3 — Add your credentials
+
+Open the file called `.env` in a text editor. Fill in the values:
+
+```
+ANTHROPIC_API_KEY=sk-ant-...        ← paste your Claude key here (skip if you don't have one)
+GMAIL_USER=you@gmail.com            ← the Gmail address that will send the emails
+GMAIL_APP_PASSWORD=xxxx xxxx xxxx   ← see instructions below
+EMAIL_RECIPIENTS=you@email.com,colleague@email.com   ← who gets the email
+```
+
+**Getting a Gmail App Password** (you can't use your normal Gmail password here):
+1. Go to your Google Account → **Security**
+2. Make sure **2-Step Verification is ON** (required)
+3. Search for **"App Passwords"** in the search bar at the top
+4. Create one → choose "Mail" → copy the 16-character code it gives you
+5. Paste that code into `GMAIL_APP_PASSWORD` in your `.env` file
+
+> Tip: If you have a spare Gmail address, use that for sending so your personal inbox stays clean.
+
+Save the file when done.
+
+---
+
+### Step 4 — Test it
+
+In your terminal, make sure you're inside the `reddit-monitor` folder, then run:
 
 ```bash
-# Preview the email in your browser — nothing is sent
 python reddit_monitor.py
+```
 
-# Actually send to everyone in EMAIL_RECIPIENTS
+This scrapes Reddit and **opens a preview of the email in your browser — nothing is sent yet.** Check that it looks right.
+
+When you're happy, send it for real:
+
+```bash
 python reddit_monitor.py --send
-
-# Skip Claude AI (faster, no API key needed)
-python reddit_monitor.py --no-ai
-
-# Override config from command line
-python reddit_monitor.py --topic "UPI issues" --keywords "UPI" "NPCI" --subreddits india --time month
 ```
 
 ---
 
-## Daily automation
+## Running it daily (pick one option)
 
-### Option A — GitHub Actions (recommended, always-on)
+### Option A — GitHub Actions (runs even when your laptop is off) ✅ Recommended
 
-No server needed. Runs every day at 11 AM IST even when your laptop is off. History and seen-IDs persist automatically across runs via the Actions cache.
+This runs the script automatically at 11 AM every day using GitHub's free servers — no laptop needed.
 
-**Setup (one time):**
+**One-time setup:**
 
-1. Push this repo to GitHub (already done if you cloned it)
-2. Go to **Settings → Secrets and variables → Actions → New repository secret** and add:
+1. Create a free account at [github.com](https://github.com) if you don't have one
+2. Fork this repo to your own GitHub account (click **Fork** at the top right of this page)
+3. Go to your forked repo → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**
 
-| Secret name | Value | Required? |
-|---|---|---|
-| `REDDIT_CLIENT_ID` | from reddit.com/prefs/apps (type: script) | **Yes for Actions** |
-| `REDDIT_CLIENT_SECRET` | from reddit.com/prefs/apps | **Yes for Actions** |
-| `ANTHROPIC_API_KEY` | your Claude API key | Optional |
-| `GMAIL_USER` | your Gmail address | Yes |
-| `GMAIL_APP_PASSWORD` | your 16-character app password | Yes |
-| `EMAIL_RECIPIENTS` | comma-separated recipient list | Yes |
+Add these secrets one by one:
 
-> **Why Reddit credentials?** GitHub Actions runners use cloud IPs that Reddit blocks. The script uses Reddit's official API when credentials are present — no user account required, just a free Reddit app. Create one at [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps): click "create another app", choose type **script**, redirect URI `http://localhost`. The `client_id` appears under the app name; `client_secret` is labeled "secret". After creating, open `reddit_monitor.py` and update the `_UA` variable to include your actual Reddit username instead of `reddit_monitor_bot` — Reddit's API terms require this.
+| Secret name | What to put |
+|---|---|
+| `GMAIL_USER` | your Gmail address |
+| `GMAIL_APP_PASSWORD` | your 16-character App Password |
+| `EMAIL_RECIPIENTS` | comma-separated list of recipients |
+| `ANTHROPIC_API_KEY` | your Claude key (optional) |
+| `REDDIT_CLIENT_ID` | see note below |
+| `REDDIT_CLIENT_SECRET` | see note below |
 
-3. Go to **Actions → Daily Reddit Digest → Run workflow** to trigger the first run manually and verify it works.
+> **Reddit credentials:** GitHub's servers are blocked by Reddit's public API, so you need a free Reddit app to bypass this. Go to [old.reddit.com/prefs/apps](https://old.reddit.com/prefs/apps), scroll to the bottom, click **"are you a developer? create an app"**, choose type **script**, set redirect URI to `http://localhost`, and hit create. The `client_id` is the short string directly under the app name. The `client_secret` is labeled "secret". Also open `reddit_monitor.py` and change `reddit_monitor_bot` in the `_UA` line to your actual Reddit username.
 
-After that it runs automatically at 11:00 IST every day. Logs are visible under the Actions tab.
+4. Go to **Actions** tab → **Daily Reddit Digest** → **Run workflow** to do your first manual test run
 
-**To change the topic/keywords without touching the code**, edit the config block at the top of `reddit_monitor.py`, commit, and push — the next scheduled run picks it up.
+After that it fires automatically at 11 AM IST every day. You can see logs under the Actions tab.
 
 ---
 
-### Option B — Mac cron (laptop must be on)
+### Option B — Mac cron (laptop must be on at 11 AM)
 
-Run automatically every day at 11 AM.
-
-**In your terminal, run:**
+In your terminal, run:
 
 ```bash
 crontab -e
 ```
 
-This opens a text editor. Add this line (replace `/path/to/reddit-monitor` with your actual folder path):
+This opens a text editor. Add this line at the bottom — replace `/path/to/reddit-monitor` with the actual folder path on your Mac (e.g. `/Users/yourname/reddit-monitor`):
 
 ```
 0 11 * * * cd /path/to/reddit-monitor && /usr/bin/python3 reddit_monitor.py --send >> output/cron.log 2>&1
 ```
 
-Save and exit. To find your Python path, run in terminal: `which python3`
+Save and exit (in the default editor: press `Escape`, then type `:wq`, then Enter).
 
-> **Mac users:** grant Terminal full disk access for cron to work — System Settings → Privacy & Security → Full Disk Access.
+To find your Python path, run in terminal: `which python3`
 
----
-
-## How it works
-
-### Reddit scraping
-
-Uses Reddit's public JSON API locally. When `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET` are set (required for GitHub Actions), it authenticates via Reddit's official OAuth API instead — same data, no user account needed, not blocked by cloud IPs.
-
-```
-reddit.com/r/india/search.json?q="keyword"&t=week&limit=25
-```
-
-- Fetches top 3 comments per post
-- Deduplicates across subreddits
-- Waits 1.5s between requests to stay within rate limits
-- Auto-retries on 429, skips a subreddit after 2 failures
-
-### Claude AI analysis
-
-If `ANTHROPIC_API_KEY` is set, all posts (up to 40) are sent to **Claude Haiku** in a single prompt (fast, cheap, configurable to Sonnet or Opus at the top of the script). Claude returns:
-
-```json
-{
-  "summary": "3-4 sentence overview",
-  "overall_sentiment": "negative",
-  "sentiment_score": -0.72,
-  "key_themes": [{"theme": "...", "description": "...", "frequency": "high"}],
-  "top_concerns": ["...", "..."],
-  "notable_quotes": ["...", "..."],
-  "recommended_actions": ["...", "..."]
-}
-```
-
-The prompt uses your `TOPIC` as context — no domain-specific instructions. Claude figures out what's relevant on its own.
-
-If no key is set, the tool still runs and produces a raw post digest without the AI layer.
-
-### Email
-
-Built with inline HTML styles (renders correctly in Gmail, Outlook, Apple Mail). Sent via Gmail SMTP.
+> **Mac users:** You may need to grant Terminal full disk access for cron to work — System Settings → Privacy & Security → Full Disk Access → add Terminal.
 
 ---
 
-## Output files
+## Other useful commands
 
-Each run saves to `output/` (gitignored):
+All of these are run in your terminal, inside the `reddit-monitor` folder:
 
-| File | Contents |
-|------|----------|
-| `email_preview.html` | Full email HTML — open in browser to review |
-| `email_subject.txt` | Subject line |
-| `reddit_data_<timestamp>.json` | Raw posts + full analysis JSON |
-| `history.json` | Sentiment + themes across last 90 runs (powers trend tracking) |
-| `seen_ids.txt` | Post IDs already sent — prevents duplicates across daily runs |
+```bash
+# Preview email in browser without sending
+python reddit_monitor.py
+
+# Send the email
+python reddit_monitor.py --send
+
+# Run without AI analysis (faster, no Claude key needed)
+python reddit_monitor.py --no-ai
+
+# Try a different topic without editing the file
+python reddit_monitor.py --topic "UPI issues" --keywords "UPI" "NPCI" --subreddits india
+
+# Search further back in time
+python reddit_monitor.py --time month
+
+# Show all posts again even if already sent before
+python reddit_monitor.py --no-dedup --send
+```
 
 ---
 
 ## Troubleshooting
 
+**"You haven't configured the script yet"**
+- Open `reddit_monitor.py` and fill in `TOPIC`, `KEYWORDS`, and `SUBREDDITS` at the top
+
 **No posts found**
-- Try `--time month` or `--time year`
-- Test your query in a browser: `reddit.com/r/india/search.json?q="your keyword"&t=week`
+- Try a longer time range: add `--time month` to your command
+- Check your spelling — keywords must match how people actually write on Reddit
 
-**Rate limited (429)**
-- Wait 10–15 minutes, then retry
-- Reduce `LIMIT` to 10
+**Email not arriving**
+- Make sure you used an App Password, not your normal Gmail password
+- Check your spam/promotions folder
+- Run without `--send` first to confirm the scraping is working
 
-**GitHub Actions getting 403 from Reddit**
-- Reddit blocks cloud datacenter IPs — add `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET` as GitHub secrets (see setup table above)
-- Create a free Reddit app at reddit.com/prefs/apps (type: script, redirect URI: http://localhost)
+**"Nothing new since last run"**
+- The tool remembers posts it already sent and skips them
+- Add `--no-dedup` to your command to include everything
 
-**Email not sending**
-- Make sure you're using an App Password, not your normal Gmail password
-- Check all env vars are set: `GMAIL_USER`, `GMAIL_APP_PASSWORD`, `EMAIL_RECIPIENTS`
-- Run without `--send` first to confirm scraping works
+**Scheduled run not firing (Mac cron)**
+- Run the command manually in terminal first to confirm it works
+- Check `output/cron.log` for error messages
+- Verify your Python path: `which python3`
 
-**Nothing new since last run**
-- The tool skips posts already sent in previous runs (deduplication)
-- Use `--no-dedup` to include all posts regardless
+**GitHub Actions getting a 403 error from Reddit**
+- You need to add `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET` as GitHub secrets — see setup instructions above
 
-**Cron not running**
-- Test the exact cron command manually in terminal first
-- Check `output/cron.log` for errors
-- Verify Python path with `which python3`
+---
+
+## Files saved after each run
+
+Everything goes into an `output/` folder that gets created automatically:
+
+| File | What it is |
+|---|---|
+| `email_preview.html` | Open this in your browser to preview the email |
+| `reddit_data_[date].json` | Raw posts and AI analysis — useful for deeper dives |
+| `history.json` | Tracks sentiment across runs — powers the trend tracking |
+| `seen_ids.txt` | Remembers which posts were already sent so you don't get duplicates |
 
 ---
 
 ## Requirements
 
 - Python 3.11+
-- `anthropic` — for Claude AI analysis (optional)
-- `python-dotenv` — for reading `.env`
-- Gmail account with App Password — for sending email
-- Reddit app credentials — optional locally, required for GitHub Actions
+- Gmail account with an App Password
+- Claude API key from [console.anthropic.com](https://console.anthropic.com) — optional, but recommended for the AI summary
