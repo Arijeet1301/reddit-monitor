@@ -45,15 +45,16 @@ jobs:
 
       - name: Run digest and send email
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GMAIL_USER: ${{ secrets.GMAIL_USER }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          EMAIL_RECIPIENTS: ${{ secrets.EMAIL_RECIPIENTS }}
-        env:
-          INPUT_TOPIC:      ${{ inputs.topic }}
-          INPUT_KEYWORDS:   ${{ inputs.keywords }}
-          INPUT_SUBS:       ${{ inputs.subreddits }}
-          INPUT_TIME:       ${{ inputs.time }}
+          ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_USER:           ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD:   ${{ secrets.GMAIL_APP_PASSWORD }}
+          EMAIL_RECIPIENTS:     ${{ secrets.EMAIL_RECIPIENTS }}
+          REDDIT_CLIENT_ID:     ${{ secrets.REDDIT_CLIENT_ID }}
+          REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
+          INPUT_TOPIC:          ${{ inputs.topic }}
+          INPUT_KEYWORDS:       ${{ inputs.keywords }}
+          INPUT_SUBS:           ${{ inputs.subreddits }}
+          INPUT_TIME:           ${{ inputs.time }}
         run: |
           set -e
           CMD=(python reddit_monitor.py --send)

@@ -2,7 +2,7 @@
 
 Scrape any subreddit for keywords you care about, analyze the discussion with Claude AI, and send a daily HTML email digest to yourself and your team.
 
-**No Reddit account needed. No Reddit API key needed. Claude is optional.**
+**No Reddit account needed. Claude is optional. Reddit API key optional for local runs, required for GitHub Actions.**
 
 ---
 
@@ -11,10 +11,12 @@ Scrape any subreddit for keywords you care about, analyze the discussion with Cl
 A daily email with:
 - **AI Summary** — 3–4 sentence overview of what Reddit is saying
 - **Sentiment bar** — positive / negative / neutral score (-1 to +1)
-- **Key Themes** — recurring topics with frequency (high / medium / low)
+- **Trend delta** — is sentiment improving or worsening vs the previous run?
+- **Key Themes** — with NEW / RECURRING badges based on history across runs
 - **Top Concerns** — what people are actually worried about
 - **Recommended Actions** — Claude's suggested next steps
 - **All Posts** — clickable table of every post found, sorted by score
+- **Urgent alert email** — fires separately when sentiment drops below -0.8
 
 Works for any topic — brand monitoring, competitor tracking, category pulse, policy research, anything.
 
@@ -54,7 +56,7 @@ python reddit_monitor.py --send   # send to your recipients
 pip install -r requirements.txt
 ```
 
-Two packages: `anthropic` (for Claude AI) and `python-dotenv`.
+Two packages: `anthropic` (for Claude AI, optional) and `python-dotenv`.
 
 ### 2. Configure your topic
 
@@ -106,6 +108,8 @@ cp .env.example .env
 Fill in `.env`:
 
 ```env
+REDDIT_CLIENT_ID=                   # optional locally, required for GitHub Actions
+REDDIT_CLIENT_SECRET=               # optional locally, required for GitHub Actions
 ANTHROPIC_API_KEY=sk-ant-...        # optional — tool works without it
 GMAIL_USER=you@gmail.com
 GMAIL_APP_PASSWORD=xxxx xxxx xxxx   # see below
@@ -192,7 +196,7 @@ Find your Python path: `which python3`
 
 ### Reddit scraping
 
-Uses Reddit's public JSON API — every Reddit URL has a `.json` equivalent that returns structured data. No account, no OAuth, no API key.
+Uses Reddit's public JSON API locally. When `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET` are set (required for GitHub Actions), it authenticates via Reddit's official OAuth API instead — same data, no user account needed, not blocked by cloud IPs.
 
 ```
 reddit.com/r/india/search.json?q="keyword"&t=week&limit=25
@@ -205,7 +209,7 @@ reddit.com/r/india/search.json?q="keyword"&t=week&limit=25
 
 ### Claude AI analysis
 
-If `ANTHROPIC_API_KEY` is set, all posts (up to 40) are sent to **Claude Opus 4.6** in a single prompt. Claude returns:
+If `ANTHROPIC_API_KEY` is set, all posts (up to 40) are sent to **Claude Haiku** in a single prompt (fast, cheap, configurable to Sonnet or Opus at the top of the script). Claude returns:
 
 ```json
 {
@@ -238,6 +242,8 @@ Each run saves to `output/` (gitignored):
 | `email_preview.html` | Full email HTML — open in browser to review |
 | `email_subject.txt` | Subject line |
 | `reddit_data_<timestamp>.json` | Raw posts + full analysis JSON |
+| `history.json` | Sentiment + themes across last 90 runs (powers trend tracking) |
+| `seen_ids.txt` | Post IDs already sent — prevents duplicates across daily runs |
 
 ---
 
@@ -251,10 +257,18 @@ Each run saves to `output/` (gitignored):
 - Wait 10–15 minutes, then retry
 - Reduce `LIMIT` to 10
 
+**GitHub Actions getting 403 from Reddit**
+- Reddit blocks cloud datacenter IPs — add `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET` as GitHub secrets (see setup table above)
+- Create a free Reddit app at reddit.com/prefs/apps (type: script, redirect URI: http://localhost)
+
 **Email not sending**
 - Make sure you're using an App Password, not your normal Gmail password
-- Check all three env vars are set: `GMAIL_USER`, `GMAIL_APP_PASSWORD`, `EMAIL_RECIPIENTS`
+- Check all env vars are set: `GMAIL_USER`, `GMAIL_APP_PASSWORD`, `EMAIL_RECIPIENTS`
 - Run without `--send` first to confirm scraping works
+
+**Nothing new since last run**
+- The tool skips posts already sent in previous runs (deduplication)
+- Use `--no-dedup` to include all posts regardless
 
 **Cron not running**
 - Test the exact cron command manually in terminal first
@@ -269,3 +283,4 @@ Each run saves to `output/` (gitignored):
 - `anthropic` — for Claude AI analysis (optional)
 - `python-dotenv` — for reading `.env`
 - Gmail account with App Password — for sending email
+- Reddit app credentials — optional locally, required for GitHub Actions
