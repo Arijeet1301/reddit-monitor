@@ -1,0 +1,549 @@
+#!/usr/bin/env python3
+"""
+Reddit Monitor Starter Kit
+===========================
+Scrapes Reddit for any keywords, optionally analyzes with Claude AI,
+and sends a daily HTML email digest to yourself and your team.
+
+Before running: fill in the CONFIG block below (lines 37-44).
+
+Quickstart:
+  1. pip install -r requirements.txt
+  2. cp .env.example .env  and fill in your values
+  3. python reddit_monitor.py              # run + preview email in browser
+  4. python reddit_monitor.py --send       # run + actually send email
+  5. Add to cron for daily runs (see GUIDE.md)
+"""
+
+import argparse
+import json
+import os
+import smtplib
+import ssl
+import subprocess
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass, field
+from datetime import datetime
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ★ CONFIGURE THESE — the only block you need to edit ★
+# ═══════════════════════════════════════════════════════════════════════════════
+
+TOPIC       = "YOUR TOPIC HERE"         # e.g. "Swiggy complaints", "UPI issues"
+KEYWORDS    = ["keyword 1", "keyword 2"]  # what to search for (OR logic)
+SUBREDDITS  = ["subreddit1", "subreddit2"]  # e.g. ["india", "bangalore", "mumbai"]
+LIMIT       = 25                        # max posts per subreddit (25 is a good default)
+TIME_FILTER = "week"                    # how far back to look: day | week | month | year | all
+OUTPUT_DIR  = "output"                  # folder where previews + JSON are saved
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Examples:
+#
+# Swiggy brand monitoring:
+#   TOPIC      = "Swiggy mentions"
+#   KEYWORDS   = ["Swiggy", "swiggy app", "swiggy delivery"]
+#   SUBREDDITS = ["india", "bangalore", "mumbai", "delhi"]
+#
+# Competitor tracking:
+#   TOPIC      = "Zomato vs Swiggy"
+#   KEYWORDS   = ["Zomato", "food delivery app"]
+#   SUBREDDITS = ["india", "bangalore"]
+#
+# Quick commerce pulse:
+#   TOPIC      = "quick commerce"
+#   KEYWORDS   = ["Blinkit", "Zepto", "Swiggy Instamart", "quick commerce"]
+#   SUBREDDITS = ["india", "bangalore", "mumbai"]
+#
+# UPI / payments issues:
+#   TOPIC      = "UPI issues"
+#   KEYWORDS   = ["UPI failed", "UPI down", "payment failed"]
+#   SUBREDDITS = ["india", "IndiaInvestments", "personalfinanceindia"]
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_PLACEHOLDER_TOPIC    = "YOUR TOPIC HERE"
+_PLACEHOLDER_KEYWORDS = ["keyword 1", "keyword 2"]
+_PLACEHOLDER_SUBS     = ["subreddit1", "subreddit2"]
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+#  REDDIT SCRAPER
+# ───────────────────────────────────────────────────────────────────────────────
+
+_HEADERS = {"User-Agent": "Mozilla/5.0 RedditMonitor/1.0"}
+_DELAY   = 1.5   # seconds between requests — keeps Reddit happy
+
+_SSL_CTX = ssl.create_default_context()
+_SSL_CTX.check_hostname = False
+_SSL_CTX.verify_mode = ssl.CERT_NONE
+
+
+@dataclass
+class Post:
+    id:           str
+    title:        str
+    body:         str
+    url:          str
+    subreddit:    str
+    author:       str
+    score:        int
+    num_comments: int
+    created_utc:  float
+    top_comments: list[str] = field(default_factory=list)
+
+    @property
+    def date(self) -> str:
+        return datetime.fromtimestamp(self.created_utc).strftime("%Y-%m-%d")
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id, "title": self.title,
+            "body": self.body[:400], "url": self.url,
+            "subreddit": self.subreddit, "author": self.author,
+            "score": self.score, "num_comments": self.num_comments,
+            "date": self.date, "top_comments": self.top_comments,
+        }
+
+
+def _get(url: str, retries: int = 2) -> dict:
+    for attempt in range(retries + 1):
+        req = urllib.request.Request(url, headers=_HEADERS)
+        try:
+            with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < retries:
+                wait = 10 * (attempt + 1)
+                print(f"  Rate limited — retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                raise
+
+
+def _fetch_comments(subreddit: str, post_id: str, n: int = 3) -> list[str]:
+    comments = []
+    try:
+        url = f"https://www.reddit.com/r/{subreddit}/comments/{post_id}.json?limit={n}"
+        data = _get(url)
+        time.sleep(_DELAY)
+        if len(data) >= 2:
+            for child in data[1]["data"]["children"][:n]:
+                body = child["data"].get("body", "")
+                if body and body not in ("[deleted]", "[removed]"):
+                    comments.append(body[:300])
+    except Exception:
+        pass
+    return comments
+
+
+def scrape(subreddits: list[str], keywords: list[str], limit: int, time_filter: str) -> list[Post]:
+    all_posts, seen = [], set()
+
+    for sub in subreddits:
+        query = " OR ".join(f'"{kw}"' for kw in keywords)
+        params = urllib.parse.urlencode({
+            "q": query, "sort": "relevance", "t": time_filter,
+            "limit": min(limit, 100), "restrict_sr": "true",
+        })
+        url = f"https://www.reddit.com/r/{sub}/search.json?{params}"
+        try:
+            data = _get(url)
+            time.sleep(_DELAY)
+        except Exception as e:
+            print(f"  Skipping r/{sub}: {e}")
+            continue
+
+        for child in data.get("data", {}).get("children", []):
+            p = child.get("data", {})
+            pid = p.get("id", "")
+            if pid in seen:
+                continue
+            seen.add(pid)
+            comments = _fetch_comments(sub, pid)
+            all_posts.append(Post(
+                id=pid, title=p.get("title", ""),
+                body=p.get("selftext", "") or "",
+                url=f"https://reddit.com{p.get('permalink', '')}",
+                subreddit=sub, author=p.get("author", "[deleted]"),
+                score=p.get("score", 0), num_comments=p.get("num_comments", 0),
+                created_utc=p.get("created_utc", 0), top_comments=comments,
+            ))
+
+    all_posts.sort(key=lambda p: p.score, reverse=True)
+    return all_posts
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+#  CLAUDE ANALYSIS  (optional — skipped gracefully if no API key)
+# ───────────────────────────────────────────────────────────────────────────────
+
+def analyze_with_claude(posts: list[Post], keywords: list[str], topic: str) -> dict | None:
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        print("  No ANTHROPIC_API_KEY — skipping AI analysis (raw digest only)")
+        return None
+
+    try:
+        from anthropic import Anthropic
+    except ImportError:
+        print("  anthropic package not installed — skipping AI analysis")
+        return None
+
+    client = Anthropic(api_key=api_key)
+
+    posts_text = "\n".join(
+        f"[POST {i}] r/{p.subreddit} | Score:{p.score}\n"
+        f"Title: {p.title}\n"
+        f"Body: {p.body[:300]}\n"
+        f"Top comment: {p.top_comments[0][:200] if p.top_comments else 'none'}\n"
+        for i, p in enumerate(posts[:40], 1)
+    )
+
+    prompt = f"""You are an analyst. Analyze these {len(posts)} Reddit posts about "{topic}" and return a JSON with:
+{{
+  "summary": "3-4 sentence executive summary of what is being discussed",
+  "overall_sentiment": "positive | negative | neutral | mixed",
+  "sentiment_score": <-1.0 to 1.0>,
+  "key_themes": [
+    {{"theme": "theme name", "description": "1 sentence", "frequency": "high|medium|low"}}
+  ],
+  "top_concerns": ["concern 1", "concern 2", "concern 3"],
+  "notable_quotes": ["quote from post 1", "quote 2"],
+  "recommended_actions": ["action 1", "action 2", "action 3"]
+}}
+
+Posts:
+{posts_text}
+
+Return ONLY valid JSON."""
+
+    try:
+        resp = client.messages.create(
+            model="claude-opus-4-6",
+            max_tokens=4000,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = resp.content[0].text.strip()
+        if text.startswith("```"):
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+        return json.loads(text)
+    except Exception as e:
+        print(f"  Claude analysis failed: {e}")
+        return None
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+#  EMAIL BUILDER
+# ───────────────────────────────────────────────────────────────────────────────
+
+def build_email(posts: list[Post], analysis: dict | None, topic: str) -> tuple[str, str]:
+    """Returns (subject, html)."""
+    date_str = datetime.now().strftime("%d %b %Y")
+    subject  = f"[Reddit Monitor] {topic} digest — {date_str} ({len(posts)} posts)"
+
+    sentiment_html = ""
+    analysis_html  = ""
+
+    if analysis:
+        score = analysis.get("sentiment_score", 0)
+        bar_pct   = int((score + 1) / 2 * 100)
+        bar_color = "#EF4444" if score < -0.3 else ("#F59E0B" if score < 0.3 else "#22C55E")
+        overall   = analysis.get("overall_sentiment", "N/A").upper()
+
+        themes_html = "".join(
+            f'<tr><td style="padding:10px;font-weight:600">{t["theme"]}</td>'
+            f'<td style="padding:10px;color:#4B5563">{t["description"]}</td>'
+            f'<td style="padding:10px;text-align:center">'
+            f'<span style="background:{"#EF4444" if t["frequency"]=="high" else "#F59E0B" if t["frequency"]=="medium" else "#22C55E"};'
+            f'color:white;padding:3px 8px;border-radius:10px;font-size:11px">{t["frequency"].upper()}</span>'
+            f'</td></tr>'
+            for t in analysis.get("key_themes", [])
+        )
+        concerns_html = "".join(
+            f'<li style="margin-bottom:8px;color:#374151">{c}</li>'
+            for c in analysis.get("top_concerns", [])
+        )
+        actions_html = "".join(
+            f'<li style="margin-bottom:8px;color:#374151">{a}</li>'
+            for a in analysis.get("recommended_actions", [])
+        )
+        quotes_html = "".join(
+            f'<blockquote style="background:#F9FAFB;border-left:3px solid #6B7280;'
+            f'padding:10px 14px;margin:8px 0;font-size:13px;color:#374151;font-style:italic">{q}</blockquote>'
+            for q in analysis.get("notable_quotes", [])
+        )
+
+        analysis_html = f"""
+        <div style="background:white;border-radius:12px;padding:20px;margin-bottom:20px;box-shadow:0 1px 3px rgba(0,0,0,0.08)">
+          <h2 style="margin:0 0 12px;color:#111827;font-size:16px">📋 AI Summary</h2>
+          <p style="margin:0;color:#374151;line-height:1.7;font-size:14px">{analysis.get("summary","")}</p>
+        </div>
+
+        <div style="background:white;border-radius:12px;padding:20px;margin-bottom:20px;box-shadow:0 1px 3px rgba(0,0,0,0.08)">
+          <h2 style="margin:0 0 16px;color:#111827;font-size:16px">💬 Sentiment: {overall}</h2>
+          <div style="background:#F3F4F6;border-radius:8px;height:14px;overflow:hidden">
+            <div style="background:{bar_color};height:100%;width:{bar_pct}%;border-radius:8px"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:#9CA3AF;margin-top:4px">
+            <span>Very Negative</span><span>Neutral</span><span>Very Positive</span>
+          </div>
+        </div>
+
+        <div style="background:white;border-radius:12px;padding:20px;margin-bottom:20px;box-shadow:0 1px 3px rgba(0,0,0,0.08)">
+          <h2 style="margin:0 0 16px;color:#111827;font-size:16px">🔍 Key Themes</h2>
+          <table style="width:100%;border-collapse:collapse;font-size:13px">
+            <thead><tr style="background:#F9FAFB">
+              <th style="padding:10px;text-align:left;color:#6B7280">Theme</th>
+              <th style="padding:10px;text-align:left;color:#6B7280">Description</th>
+              <th style="padding:10px;text-align:center;color:#6B7280">Level</th>
+            </tr></thead>
+            <tbody>{themes_html}</tbody>
+          </table>
+        </div>
+
+        <div style="background:#FFF7ED;border:1px solid #FED7AA;border-radius:12px;padding:20px;margin-bottom:20px">
+          <h2 style="margin:0 0 12px;color:#C2410C;font-size:16px">⚡ Top Concerns</h2>
+          <ul style="margin:0;padding-left:20px">{concerns_html}</ul>
+        </div>
+
+        <div style="background:#F0FDF4;border:1px solid #BBF7D0;border-radius:12px;padding:20px;margin-bottom:20px">
+          <h2 style="margin:0 0 12px;color:#15803D;font-size:16px">✅ Recommended Actions</h2>
+          <ol style="margin:0;padding-left:20px">{actions_html}</ol>
+        </div>
+
+        {'<div style="background:white;border-radius:12px;padding:20px;margin-bottom:20px;box-shadow:0 1px 3px rgba(0,0,0,0.08)"><h2 style="margin:0 0 12px;color:#111827;font-size:16px">💬 Notable Quotes</h2>' + quotes_html + '</div>' if quotes_html else ''}
+        """
+
+    post_rows = "".join(
+        f'<tr style="border-bottom:1px solid #F3F4F6">'
+        f'<td style="padding:10px;color:#6B7280;font-size:12px">r/{p.subreddit}</td>'
+        f'<td style="padding:10px"><a href="{p.url}" style="color:#F97316;text-decoration:none;font-size:13px">{p.title[:80]}</a></td>'
+        f'<td style="padding:10px;text-align:center;font-size:13px;color:#374151">{p.score}</td>'
+        f'<td style="padding:10px;text-align:center;font-size:12px;color:#6B7280">{p.date}</td>'
+        f'</tr>'
+        for p in posts[:30]
+    )
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#F9FAFB">
+<div style="max-width:680px;margin:0 auto;padding:24px">
+
+  <!-- Header -->
+  <div style="background:linear-gradient(135deg,#1E3A5F,#2563EB);border-radius:16px;padding:28px;margin-bottom:20px;text-align:center">
+    <div style="color:white;font-size:22px;font-weight:800">Reddit Intelligence Digest</div>
+    <div style="color:rgba(255,255,255,0.8);font-size:14px;margin-top:6px">
+      {topic} · {date_str} · {len(posts)} posts from r/{", r/".join(SUBREDDITS[:3])}{"..." if len(SUBREDDITS) > 3 else ""}
+    </div>
+  </div>
+
+  {analysis_html}
+
+  <!-- Posts Table -->
+  <div style="background:white;border-radius:12px;padding:20px;margin-bottom:20px;box-shadow:0 1px 3px rgba(0,0,0,0.08)">
+    <h2 style="margin:0 0 16px;color:#111827;font-size:16px">📄 All Posts ({len(posts)} found)</h2>
+    <table style="width:100%;border-collapse:collapse">
+      <thead>
+        <tr style="background:#F9FAFB">
+          <th style="padding:10px;text-align:left;font-size:12px;color:#6B7280">Subreddit</th>
+          <th style="padding:10px;text-align:left;font-size:12px;color:#6B7280">Title</th>
+          <th style="padding:10px;text-align:center;font-size:12px;color:#6B7280">Score</th>
+          <th style="padding:10px;text-align:center;font-size:12px;color:#6B7280">Date</th>
+        </tr>
+      </thead>
+      <tbody>{post_rows}</tbody>
+    </table>
+  </div>
+
+  <!-- Footer -->
+  <div style="text-align:center;padding:16px;color:#9CA3AF;font-size:12px">
+    Generated by Reddit Monitor · {date_str}<br>
+    <span style="color:#D1D5DB">Powered by Reddit + {"Claude AI" if analysis else "Python"}</span>
+  </div>
+
+</div>
+</body>
+</html>"""
+
+    return subject, html
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+#  EMAIL SENDER
+# ───────────────────────────────────────────────────────────────────────────────
+
+def send_email(subject: str, html: str) -> int:
+    gmail_user     = os.getenv("GMAIL_USER")
+    gmail_password = os.getenv("GMAIL_APP_PASSWORD")
+    recipients_raw = os.getenv("EMAIL_RECIPIENTS", "")
+
+    if not gmail_user or not gmail_password:
+        raise ValueError("Set GMAIL_USER and GMAIL_APP_PASSWORD in your .env file")
+    if not recipients_raw:
+        raise ValueError("Set EMAIL_RECIPIENTS in your .env file (comma-separated)")
+
+    recipients = [r.strip() for r in recipients_raw.split(",") if r.strip()]
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"]    = f"Reddit Monitor <{gmail_user}>"
+    msg["To"]      = ", ".join(recipients)
+    msg.attach(MIMEText(html, "html"))
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(gmail_user, gmail_password)
+        server.sendmail(gmail_user, recipients, msg.as_string())
+
+    return len(recipients)
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+#  SAVE + PREVIEW
+# ───────────────────────────────────────────────────────────────────────────────
+
+def save_preview(html: str, subject: str, output_dir: str) -> str:
+    Path(output_dir).mkdir(exist_ok=True)
+    preview_path = os.path.join(output_dir, "email_preview.html")
+    subject_path = os.path.join(output_dir, "email_subject.txt")
+    with open(preview_path, "w", encoding="utf-8") as f:
+        f.write(html)
+    with open(subject_path, "w", encoding="utf-8") as f:
+        f.write(subject)
+    return preview_path
+
+
+def save_raw(posts: list[Post], analysis: dict | None, output_dir: str) -> str:
+    Path(output_dir).mkdir(exist_ok=True)
+    ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = os.path.join(output_dir, f"reddit_data_{ts}.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({
+            "scraped_at": datetime.now().isoformat(),
+            "keywords": KEYWORDS, "subreddits": SUBREDDITS,
+            "total_posts": len(posts),
+            "analysis": analysis,
+            "posts": [p.to_dict() for p in posts],
+        }, f, indent=2, ensure_ascii=False)
+    return path
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+#  MAIN
+# ───────────────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Reddit Monitor — scrape, analyze, and email a digest",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python reddit_monitor.py              # scrape + preview email in browser
+  python reddit_monitor.py --send       # scrape + send email to recipients
+  python reddit_monitor.py --no-ai      # skip Claude analysis (faster)
+  python reddit_monitor.py --keywords "UPI" "payment" --subreddits india
+        """,
+    )
+    parser.add_argument("--send",       action="store_true", help="Send email after building it")
+    parser.add_argument("--no-ai",      action="store_true", help="Skip Claude AI analysis")
+    parser.add_argument("--topic",      help="Override TOPIC from config (used in email subject)")
+    parser.add_argument("--keywords",   nargs="+", help="Override keywords from config")
+    parser.add_argument("--subreddits", nargs="+", help="Override subreddits from config")
+    parser.add_argument("--time",       default=TIME_FILTER, choices=["day","week","month","year","all"])
+    parser.add_argument("--limit",      type=int, default=LIMIT)
+    parser.add_argument("--output",     default=OUTPUT_DIR)
+    args = parser.parse_args()
+
+    # Resolve effective values (CLI overrides config block)
+    topic      = args.topic      or TOPIC
+    keywords   = args.keywords   or KEYWORDS
+    subreddits = args.subreddits or SUBREDDITS
+
+    # Guard: catch unconfigured placeholders before wasting time scraping
+    if (topic == _PLACEHOLDER_TOPIC and not args.topic) \
+            or keywords == _PLACEHOLDER_KEYWORDS \
+            or subreddits == _PLACEHOLDER_SUBS:
+        print("\n⚠  You haven't configured the script yet.")
+        print("   Open reddit_monitor.py and fill in the CONFIG block at the top:")
+        print("     TOPIC      = \"your topic\"")
+        print("     KEYWORDS   = [\"keyword1\", \"keyword2\"]")
+        print("     SUBREDDITS = [\"india\", \"bangalore\"]")
+        print("\n   See the examples in the config block for inspiration.\n")
+        return
+
+    print(f"\n{'='*55}")
+    print(f"  Reddit Monitor — {topic}")
+    print(f"{'='*55}")
+    print(f"  Keywords   : {', '.join(keywords)}")
+    print(f"  Subreddits : r/{', r/'.join(subreddits)}")
+    print(f"  Time range : last {args.time}")
+    print(f"{'='*55}\n")
+
+    # Step 1: Scrape
+    print(f"[1/4] Scraping Reddit...")
+    posts = scrape(subreddits, keywords, args.limit, args.time)
+    if not posts:
+        print("  No posts found. Try different keywords, subreddits, or a longer time range.")
+        return
+    print(f"  Found {len(posts)} unique posts\n")
+
+    # Step 2: Claude analysis (optional) — run before saving so JSON includes it
+    analysis = None
+    if not args.no_ai:
+        print("[2/4] Running Claude AI analysis...")
+        analysis = analyze_with_claude(posts, keywords, topic)
+        if analysis:
+            print(f"  Done — sentiment: {analysis.get('overall_sentiment','?')}\n")
+    else:
+        print("[2/4] AI analysis skipped (--no-ai)\n")
+
+    # Step 3: Save raw data (now includes analysis)
+    raw_path = save_raw(posts, analysis, args.output)
+    print(f"[3/4] Raw data saved → {raw_path}\n")
+
+    # Step 4: Build email + send or preview
+    print("[4/4] Building email + sending...")
+    subject, html = build_email(posts, analysis, topic)
+    preview_path  = save_preview(html, subject, args.output)
+    print(f"  Subject  : {subject}")
+    print(f"  Preview  → {preview_path}\n")
+
+    if args.send:
+        print("  Sending email...")
+        try:
+            n = send_email(subject, html)
+            print(f"  Sent to {n} recipients\n")
+        except ValueError as e:
+            print(f"  Email config missing: {e}")
+            print("  Add GMAIL_USER, GMAIL_APP_PASSWORD, EMAIL_RECIPIENTS to .env\n")
+        except Exception as e:
+            print(f"  Email failed: {e}\n")
+    else:
+        print("  Run with --send to actually send the email.")
+        print("  Opening preview in browser...\n")
+        try:
+            import subprocess as _sp
+            _sp.Popen(["open", preview_path])
+        except Exception:
+            pass
+
+    print(f"Done! {len(posts)} posts processed.")
+    if analysis:
+        print(f"Sentiment: {analysis.get('overall_sentiment','?').upper()}")
+        for theme in analysis.get("key_themes", [])[:3]:
+            print(f"  • {theme['theme']} ({theme['frequency']})")
+
+
+if __name__ == "__main__":
+    main()
