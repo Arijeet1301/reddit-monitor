@@ -19,6 +19,7 @@ import argparse
 import gzip
 import json
 import logging
+import logging.handlers
 import os
 import smtplib
 import ssl
@@ -46,7 +47,12 @@ def _setup_logger(output_dir: str = "output") -> logging.Logger:
     log.setLevel(logging.DEBUG)
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S")
     # File handler — DEBUG and above
-    fh = logging.FileHandler(os.path.join(output_dir, "reddit_monitor.log"), encoding="utf-8")
+    fh = logging.handlers.RotatingFileHandler(
+        os.path.join(output_dir, "reddit_monitor.log"),
+        maxBytes=5 * 1024 * 1024,  # 5 MB per file
+        backupCount=3,              # keep .log, .log.1, .log.2, .log.3
+        encoding="utf-8",
+    )
     fh.setFormatter(fmt)
     log.addHandler(fh)
     # Console handler — INFO and above (keeps terminal readable)
@@ -69,11 +75,12 @@ LIMIT       = 25                          # max posts per subreddit (25 is a goo
 TIME_FILTER = "week"                      # how far back: day | week | month | year | all
 OUTPUT_DIR  = "output"                    # folder where previews + JSON are saved
 
-# AI model — swap for cheaper/faster if Opus is overkill for your use case:
-#   claude-opus-4-6          → most capable, highest cost
-#   claude-sonnet-4-6        → strong quality, ~5x cheaper than Opus
-#   claude-haiku-4-5-20251001 → fast and cheap, good for simple digests
-MODEL = "claude-opus-4-6"
+# AI model — Haiku is the right default for daily digests: fast, cheap, capable.
+# Upgrade if you need deeper analysis across hundreds of posts.
+#   claude-haiku-4-5-20251001 → default — fast, ~20x cheaper than Opus
+#   claude-sonnet-4-6         → stronger reasoning, ~4x cheaper than Opus
+#   claude-opus-4-6           → most capable, use for complex multi-topic analysis
+MODEL = "claude-haiku-4-5-20251001"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Examples:
