@@ -12,15 +12,15 @@ Quickstart:
   2. cp .env.example .env  and fill in your values
   3. python reddit_monitor.py              # run + preview email in browser
   4. python reddit_monitor.py --send       # run + actually send email
-  5. Add to cron for daily runs (see GUIDE.md)
+  5. Add to cron for daily runs (see README.md)
 """
 
 import argparse
+import gzip
 import json
 import os
 import smtplib
 import ssl
-import subprocess
 import time
 import urllib.error
 import urllib.parse
@@ -39,12 +39,12 @@ load_dotenv()
 #  ★ CONFIGURE THESE — the only block you need to edit ★
 # ═══════════════════════════════════════════════════════════════════════════════
 
-TOPIC       = "YOUR TOPIC HERE"         # e.g. "Swiggy complaints", "UPI issues"
+TOPIC       = "YOUR TOPIC HERE"           # e.g. "Swiggy complaints", "UPI issues"
 KEYWORDS    = ["keyword 1", "keyword 2"]  # what to search for (OR logic)
 SUBREDDITS  = ["subreddit1", "subreddit2"]  # e.g. ["india", "bangalore", "mumbai"]
-LIMIT       = 25                        # max posts per subreddit (25 is a good default)
-TIME_FILTER = "week"                    # how far back to look: day | week | month | year | all
-OUTPUT_DIR  = "output"                  # folder where previews + JSON are saved
+LIMIT       = 25                          # max posts per subreddit (25 is a good default)
+TIME_FILTER = "week"                      # how far back: day | week | month | year | all
+OUTPUT_DIR  = "output"                    # folder where previews + JSON are saved
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Examples:
@@ -55,16 +55,16 @@ OUTPUT_DIR  = "output"                  # folder where previews + JSON are saved
 #   SUBREDDITS = ["india", "bangalore", "mumbai", "delhi"]
 #
 # Competitor tracking:
-#   TOPIC      = "Zomato vs Swiggy"
+#   TOPIC      = "Zomato pulse"
 #   KEYWORDS   = ["Zomato", "food delivery app"]
 #   SUBREDDITS = ["india", "bangalore"]
 #
-# Quick commerce pulse:
+# Quick commerce:
 #   TOPIC      = "quick commerce"
 #   KEYWORDS   = ["Blinkit", "Zepto", "Swiggy Instamart", "quick commerce"]
 #   SUBREDDITS = ["india", "bangalore", "mumbai"]
 #
-# UPI / payments issues:
+# UPI / payments:
 #   TOPIC      = "UPI issues"
 #   KEYWORDS   = ["UPI failed", "UPI down", "payment failed"]
 #   SUBREDDITS = ["india", "IndiaInvestments", "personalfinanceindia"]
@@ -79,8 +79,13 @@ _PLACEHOLDER_SUBS     = ["subreddit1", "subreddit2"]
 #  REDDIT SCRAPER
 # ───────────────────────────────────────────────────────────────────────────────
 
-_HEADERS = {"User-Agent": "Mozilla/5.0 RedditMonitor/1.0"}
-_DELAY   = 1.5   # seconds between requests — keeps Reddit happy
+# Proper Reddit-style User-Agent — generic Mozilla strings get flagged faster
+_HEADERS = {
+    "User-Agent": "pc:reddit_intelligence_digest:v1.0 (by /u/reddit_monitor_bot)",
+    "Accept-Encoding": "gzip",
+    "Accept": "application/json",
+}
+_DELAY = 1.5  # seconds between requests
 
 _SSL_CTX = ssl.create_default_context()
 _SSL_CTX.check_hostname = False
@@ -119,7 +124,11 @@ def _get(url: str, retries: int = 2) -> dict:
         req = urllib.request.Request(url, headers=_HEADERS)
         try:
             with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                raw = resp.read()
+                # Handle gzip-compressed responses
+                if resp.info().get("Content-Encoding") == "gzip":
+                    raw = gzip.decompress(raw)
+                return json.loads(raw.decode("utf-8"))
         except urllib.error.HTTPError as e:
             if e.code == 429 and attempt < retries:
                 wait = 10 * (attempt + 1)
@@ -183,8 +192,55 @@ def scrape(subreddits: list[str], keywords: list[str], limit: int, time_filter: 
 
 
 # ───────────────────────────────────────────────────────────────────────────────
+#  SEEN IDs — filters posts already sent in a previous run
+# ───────────────────────────────────────────────────────────────────────────────
+
+def _load_seen_ids(output_dir: str) -> set[str]:
+    path = os.path.join(output_dir, "seen_ids.txt")
+    if not os.path.exists(path):
+        return set()
+    with open(path) as f:
+        return {line.strip() for line in f if line.strip()}
+
+
+def _save_seen_ids(post_ids: list[str], output_dir: str) -> None:
+    Path(output_dir).mkdir(exist_ok=True)
+    path = os.path.join(output_dir, "seen_ids.txt")
+    existing = _load_seen_ids(output_dir)
+    all_ids = existing | set(post_ids)
+    # Keep last 5000 IDs to prevent the file growing forever
+    with open(path, "w") as f:
+        f.write("\n".join(list(all_ids)[-5000:]))
+
+
+def filter_new_posts(posts: list[Post], output_dir: str) -> tuple[list[Post], int]:
+    """Remove posts already seen in previous runs. Returns (new_posts, skipped_count)."""
+    seen = _load_seen_ids(output_dir)
+    new_posts = [p for p in posts if p.id not in seen]
+    return new_posts, len(posts) - len(new_posts)
+
+
+# ───────────────────────────────────────────────────────────────────────────────
 #  CLAUDE ANALYSIS  (optional — skipped gracefully if no API key)
 # ───────────────────────────────────────────────────────────────────────────────
+
+def _robust_json_parse(text: str) -> dict | None:
+    """Extract JSON from Claude's response even if there's preamble or trailing text."""
+    # Try direct parse first
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    # Slice between first { and last }
+    start = text.find("{")
+    end   = text.rfind("}") + 1
+    if start != -1 and end > start:
+        try:
+            return json.loads(text[start:end])
+        except json.JSONDecodeError:
+            pass
+    return None
+
 
 def analyze_with_claude(posts: list[Post], keywords: list[str], topic: str) -> dict | None:
     api_key = os.getenv("ANTHROPIC_API_KEY")
@@ -208,23 +264,39 @@ def analyze_with_claude(posts: list[Post], keywords: list[str], topic: str) -> d
         for i, p in enumerate(posts[:40], 1)
     )
 
-    prompt = f"""You are an analyst. Analyze these {len(posts)} Reddit posts about "{topic}" and return a JSON with:
+    # XML tags keep instructions cleanly separated from messy Reddit data.
+    # Few-shot example anchors the format for recommended_actions specifically
+    # so Claude returns specific actions, not generic advice.
+    prompt = f"""You are a Senior Market Analyst. Analyze the following Reddit posts about "{topic}".
+
+<instructions>
+1. Evaluate the overall tone and sentiment of the discussion.
+2. Identify recurring themes — surface what people are actually talking about, not generic categories.
+3. For recommended_actions, be specific and actionable — not "monitor the situation" but "do X because Y".
+4. Extract real quotes from the posts for notable_quotes.
+5. Output ONLY valid JSON — no preamble, no explanation.
+</instructions>
+
+<example_output>
 {{
-  "summary": "3-4 sentence executive summary of what is being discussed",
-  "overall_sentiment": "positive | negative | neutral | mixed",
-  "sentiment_score": <-1.0 to 1.0>,
+  "summary": "Users are reporting widespread checkout failures on the Android app, primarily affecting UPI payments. Frustration is high with several mentions of switching to competitors.",
+  "overall_sentiment": "negative",
+  "sentiment_score": -0.75,
   "key_themes": [
-    {{"theme": "theme name", "description": "1 sentence", "frequency": "high|medium|low"}}
+    {{"theme": "Checkout failures", "description": "UPI payments timing out at the final step", "frequency": "high"}},
+    {{"theme": "Competitor switching", "description": "Users threatening to move to Zomato", "frequency": "medium"}}
   ],
-  "top_concerns": ["concern 1", "concern 2", "concern 3"],
-  "notable_quotes": ["quote from post 1", "quote 2"],
-  "recommended_actions": ["action 1", "action 2", "action 3"]
+  "top_concerns": ["Payment failures with no refund clarity", "No in-app error messaging when UPI fails"],
+  "notable_quotes": ["Tried 3 times, money deducted but order not placed"],
+  "recommended_actions": ["Audit the UPI payment gateway timeout settings — posts suggest failures spike after 11 PM", "Add a real-time order status page so users don't need to call support"]
 }}
+</example_output>
 
-Posts:
+<posts>
 {posts_text}
+</posts>
 
-Return ONLY valid JSON."""
+Return ONLY valid JSON matching the structure above."""
 
     try:
         resp = client.messages.create(
@@ -232,12 +304,10 @@ Return ONLY valid JSON."""
             max_tokens=4000,
             messages=[{"role": "user", "content": prompt}],
         )
-        text = resp.content[0].text.strip()
-        if text.startswith("```"):
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-        return json.loads(text)
+        result = _robust_json_parse(resp.content[0].text)
+        if result is None:
+            print("  Claude returned unparseable response — skipping analysis")
+        return result
     except Exception as e:
         print(f"  Claude analysis failed: {e}")
         return None
@@ -247,16 +317,16 @@ Return ONLY valid JSON."""
 #  EMAIL BUILDER
 # ───────────────────────────────────────────────────────────────────────────────
 
-def build_email(posts: list[Post], analysis: dict | None, topic: str) -> tuple[str, str]:
-    """Returns (subject, html)."""
+def build_email(posts: list[Post], analysis: dict | None, topic: str, subreddits: list[str]) -> tuple[str, str, str]:
+    """Returns (subject, html, plain_text)."""
     date_str = datetime.now().strftime("%d %b %Y")
     subject  = f"[Reddit Monitor] {topic} digest — {date_str} ({len(posts)} posts)"
 
-    sentiment_html = ""
-    analysis_html  = ""
+    analysis_html = ""
+    plain_sections = []
 
     if analysis:
-        score = analysis.get("sentiment_score", 0)
+        score     = analysis.get("sentiment_score", 0)
         bar_pct   = int((score + 1) / 2 * 100)
         bar_color = "#EF4444" if score < -0.3 else ("#F59E0B" if score < 0.3 else "#22C55E")
         overall   = analysis.get("overall_sentiment", "N/A").upper()
@@ -325,6 +395,14 @@ def build_email(posts: list[Post], analysis: dict | None, topic: str) -> tuple[s
         {'<div style="background:white;border-radius:12px;padding:20px;margin-bottom:20px;box-shadow:0 1px 3px rgba(0,0,0,0.08)"><h2 style="margin:0 0 12px;color:#111827;font-size:16px">💬 Notable Quotes</h2>' + quotes_html + '</div>' if quotes_html else ''}
         """
 
+        # Plain-text sections for spam filter fallback
+        plain_sections += [
+            f"SUMMARY\n{analysis.get('summary', '')}",
+            f"SENTIMENT: {overall} ({score:+.2f})",
+            "TOP CONCERNS:\n" + "\n".join(f"• {c}" for c in analysis.get("top_concerns", [])),
+            "RECOMMENDED ACTIONS:\n" + "\n".join(f"{i}. {a}" for i, a in enumerate(analysis.get("recommended_actions", []), 1)),
+        ]
+
     post_rows = "".join(
         f'<tr style="border-bottom:1px solid #F3F4F6">'
         f'<td style="padding:10px;color:#6B7280;font-size:12px">r/{p.subreddit}</td>'
@@ -335,23 +413,26 @@ def build_email(posts: list[Post], analysis: dict | None, topic: str) -> tuple[s
         for p in posts[:30]
     )
 
+    plain_post_list = "\n".join(
+        f"[{p.score}] {p.title[:80]} — {p.url}" for p in posts[:20]
+    )
+    plain_sections.append(f"TOP POSTS:\n{plain_post_list}")
+
     html = f"""<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
 <body style="margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#F9FAFB">
 <div style="max-width:680px;margin:0 auto;padding:24px">
 
-  <!-- Header -->
   <div style="background:linear-gradient(135deg,#1E3A5F,#2563EB);border-radius:16px;padding:28px;margin-bottom:20px;text-align:center">
     <div style="color:white;font-size:22px;font-weight:800">Reddit Intelligence Digest</div>
     <div style="color:rgba(255,255,255,0.8);font-size:14px;margin-top:6px">
-      {topic} · {date_str} · {len(posts)} posts from r/{", r/".join(SUBREDDITS[:3])}{"..." if len(SUBREDDITS) > 3 else ""}
+      {topic} · {date_str} · {len(posts)} posts from r/{", r/".join(subreddits[:3])}{"..." if len(subreddits) > 3 else ""}
     </div>
   </div>
 
   {analysis_html}
 
-  <!-- Posts Table -->
   <div style="background:white;border-radius:12px;padding:20px;margin-bottom:20px;box-shadow:0 1px 3px rgba(0,0,0,0.08)">
     <h2 style="margin:0 0 16px;color:#111827;font-size:16px">📄 All Posts ({len(posts)} found)</h2>
     <table style="width:100%;border-collapse:collapse">
@@ -367,7 +448,6 @@ def build_email(posts: list[Post], analysis: dict | None, topic: str) -> tuple[s
     </table>
   </div>
 
-  <!-- Footer -->
   <div style="text-align:center;padding:16px;color:#9CA3AF;font-size:12px">
     Generated by Reddit Monitor · {date_str}<br>
     <span style="color:#D1D5DB">Powered by Reddit + {"Claude AI" if analysis else "Python"}</span>
@@ -377,14 +457,21 @@ def build_email(posts: list[Post], analysis: dict | None, topic: str) -> tuple[s
 </body>
 </html>"""
 
-    return subject, html
+    plain_text = (
+        f"Reddit Monitor — {topic}\n"
+        f"{date_str} · {len(posts)} posts\n"
+        f"{'='*50}\n\n"
+        + "\n\n".join(plain_sections)
+    )
+
+    return subject, html, plain_text
 
 
 # ───────────────────────────────────────────────────────────────────────────────
 #  EMAIL SENDER
 # ───────────────────────────────────────────────────────────────────────────────
 
-def send_email(subject: str, html: str) -> int:
+def send_email(subject: str, html: str, plain_text: str) -> int:
     gmail_user     = os.getenv("GMAIL_USER")
     gmail_password = os.getenv("GMAIL_APP_PASSWORD")
     recipients_raw = os.getenv("EMAIL_RECIPIENTS", "")
@@ -400,6 +487,8 @@ def send_email(subject: str, html: str) -> int:
     msg["Subject"] = subject
     msg["From"]    = f"Reddit Monitor <{gmail_user}>"
     msg["To"]      = ", ".join(recipients)
+    # plain must be attached first — email clients pick the last part they can render
+    msg.attach(MIMEText(plain_text, "plain"))
     msg.attach(MIMEText(html, "html"))
 
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
@@ -413,7 +502,7 @@ def send_email(subject: str, html: str) -> int:
 #  SAVE + PREVIEW
 # ───────────────────────────────────────────────────────────────────────────────
 
-def save_preview(html: str, subject: str, output_dir: str) -> str:
+def save_preview(html: str, plain_text: str, subject: str, output_dir: str) -> str:
     Path(output_dir).mkdir(exist_ok=True)
     preview_path = os.path.join(output_dir, "email_preview.html")
     subject_path = os.path.join(output_dir, "email_subject.txt")
@@ -424,14 +513,14 @@ def save_preview(html: str, subject: str, output_dir: str) -> str:
     return preview_path
 
 
-def save_raw(posts: list[Post], analysis: dict | None, output_dir: str) -> str:
+def save_raw(posts: list[Post], analysis: dict | None, keywords: list[str], subreddits: list[str], output_dir: str) -> str:
     Path(output_dir).mkdir(exist_ok=True)
     ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
     path = os.path.join(output_dir, f"reddit_data_{ts}.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump({
             "scraped_at": datetime.now().isoformat(),
-            "keywords": KEYWORDS, "subreddits": SUBREDDITS,
+            "keywords": keywords, "subreddits": subreddits,
             "total_posts": len(posts),
             "analysis": analysis,
             "posts": [p.to_dict() for p in posts],
@@ -449,15 +538,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python reddit_monitor.py              # scrape + preview email in browser
-  python reddit_monitor.py --send       # scrape + send email to recipients
-  python reddit_monitor.py --no-ai      # skip Claude analysis (faster)
-  python reddit_monitor.py --keywords "UPI" "payment" --subreddits india
+  python reddit_monitor.py                                   # preview in browser
+  python reddit_monitor.py --send                            # send email
+  python reddit_monitor.py --no-ai                           # skip Claude analysis
+  python reddit_monitor.py --no-dedup                        # include already-seen posts
+  python reddit_monitor.py --topic "UPI" --keywords "UPI" "NPCI" --subreddits india
         """,
     )
     parser.add_argument("--send",       action="store_true", help="Send email after building it")
     parser.add_argument("--no-ai",      action="store_true", help="Skip Claude AI analysis")
-    parser.add_argument("--topic",      help="Override TOPIC from config (used in email subject)")
+    parser.add_argument("--no-dedup",   action="store_true", help="Skip seen-ID filtering (include all posts)")
+    parser.add_argument("--topic",      help="Override TOPIC from config")
     parser.add_argument("--keywords",   nargs="+", help="Override keywords from config")
     parser.add_argument("--subreddits", nargs="+", help="Override subreddits from config")
     parser.add_argument("--time",       default=TIME_FILTER, choices=["day","week","month","year","all"])
@@ -476,9 +567,9 @@ Examples:
             or subreddits == _PLACEHOLDER_SUBS:
         print("\n⚠  You haven't configured the script yet.")
         print("   Open reddit_monitor.py and fill in the CONFIG block at the top:")
-        print("     TOPIC      = \"your topic\"")
-        print("     KEYWORDS   = [\"keyword1\", \"keyword2\"]")
-        print("     SUBREDDITS = [\"india\", \"bangalore\"]")
+        print('     TOPIC      = "your topic"')
+        print('     KEYWORDS   = ["keyword1", "keyword2"]')
+        print('     SUBREDDITS = ["india", "bangalore"]')
         print("\n   See the examples in the config block for inspiration.\n")
         return
 
@@ -491,38 +582,50 @@ Examples:
     print(f"{'='*55}\n")
 
     # Step 1: Scrape
-    print(f"[1/4] Scraping Reddit...")
+    print("[1/5] Scraping Reddit...")
     posts = scrape(subreddits, keywords, args.limit, args.time)
     if not posts:
         print("  No posts found. Try different keywords, subreddits, or a longer time range.")
         return
-    print(f"  Found {len(posts)} unique posts\n")
+    print(f"  Found {len(posts)} unique posts")
 
-    # Step 2: Claude analysis (optional) — run before saving so JSON includes it
+    # Step 2: Deduplicate against previous runs
+    if not args.no_dedup:
+        posts, skipped = filter_new_posts(posts, args.output)
+        print(f"  {skipped} already seen in previous runs — {len(posts)} new posts remaining\n")
+        if not posts:
+            print("  Nothing new since last run. Use --no-dedup to include all posts.")
+            return
+    else:
+        print("  Deduplication skipped (--no-dedup)\n")
+
+    # Step 3: Claude analysis (optional)
     analysis = None
     if not args.no_ai:
-        print("[2/4] Running Claude AI analysis...")
+        print("[3/5] Running Claude AI analysis...")
         analysis = analyze_with_claude(posts, keywords, topic)
         if analysis:
             print(f"  Done — sentiment: {analysis.get('overall_sentiment','?')}\n")
     else:
-        print("[2/4] AI analysis skipped (--no-ai)\n")
+        print("[3/5] AI analysis skipped (--no-ai)\n")
 
-    # Step 3: Save raw data (now includes analysis)
-    raw_path = save_raw(posts, analysis, args.output)
-    print(f"[3/4] Raw data saved → {raw_path}\n")
+    # Step 4: Save raw data
+    raw_path = save_raw(posts, analysis, keywords, subreddits, args.output)
+    print(f"[4/5] Raw data saved → {raw_path}\n")
 
-    # Step 4: Build email + send or preview
-    print("[4/4] Building email + sending...")
-    subject, html = build_email(posts, analysis, topic)
-    preview_path  = save_preview(html, subject, args.output)
-    print(f"  Subject  : {subject}")
-    print(f"  Preview  → {preview_path}\n")
+    # Step 5: Build email + send or preview
+    print("[5/5] Building email...")
+    subject, html, plain_text = build_email(posts, analysis, topic, subreddits)
+    preview_path = save_preview(html, plain_text, subject, args.output)
+    print(f"  Subject : {subject}")
+    print(f"  Preview → {preview_path}\n")
 
     if args.send:
         print("  Sending email...")
         try:
-            n = send_email(subject, html)
+            n = send_email(subject, html, plain_text)
+            # Only mark as seen after a successful send
+            _save_seen_ids([p.id for p in posts], args.output)
             print(f"  Sent to {n} recipients\n")
         except ValueError as e:
             print(f"  Email config missing: {e}")
@@ -530,6 +633,8 @@ Examples:
         except Exception as e:
             print(f"  Email failed: {e}\n")
     else:
+        # Mark as seen on preview too so manual runs don't re-surface the same posts
+        _save_seen_ids([p.id for p in posts], args.output)
         print("  Run with --send to actually send the email.")
         print("  Opening preview in browser...\n")
         try:
