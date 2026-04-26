@@ -143,7 +143,7 @@ python reddit_monitor.py --topic "UPI issues" --keywords "UPI" "NPCI" --subreddi
 
 ### Option A — GitHub Actions (recommended, always-on)
 
-No server needed. Runs every day at 8 AM IST even when your laptop is off. History and seen-IDs persist automatically across runs via the Actions cache.
+No server needed. Runs every day at 11 AM IST even when your laptop is off. History and seen-IDs persist automatically across runs via the Actions cache.
 
 **Setup (one time):**
 
@@ -163,7 +163,7 @@ No server needed. Runs every day at 8 AM IST even when your laptop is off. Histo
 
 3. Go to **Actions → Daily Reddit Digest → Run workflow** to trigger the first run manually and verify it works.
 
-After that it runs automatically at 08:00 IST every day. Logs are visible under the Actions tab.
+After that it runs automatically at 11:00 IST every day. Logs are visible under the Actions tab.
 
 **To change the topic/keywords without touching the code**, edit the config block at the top of `reddit_monitor.py`, commit, and push — the next scheduled run picks it up.
 
@@ -171,7 +171,7 @@ After that it runs automatically at 08:00 IST every day. Logs are visible under 
 
 ### Option B — Mac cron (laptop must be on)
 
-Run automatically every morning at 8 AM:
+Run automatically every day at 11 AM:
 
 ```bash
 crontab -e
@@ -179,7 +179,7 @@ crontab -e
 
 Add:
 ```
-0 8 * * * cd /path/to/reddit-monitor && /usr/bin/python3 reddit_monitor.py --send >> output/cron.log 2>&1
+0 11 * * * cd /path/to/reddit-monitor && /usr/bin/python3 reddit_monitor.py --send >> output/cron.log 2>&1
 ```
 
 Find your Python path: `which python3`
